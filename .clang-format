@@ -1,0 +1,7 @@
+BasedOnStyle: Chromium
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: false
+  BeforeElse: true
