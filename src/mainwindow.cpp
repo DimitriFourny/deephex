@@ -11,7 +11,10 @@
 #include <QStatusBar>
 #include <QVBoxLayout>
 #include <QWidget>
+#include "elf_map.h"
 #include "heatmap.h"
+#include "macho_map.h"
+#include "standard_map.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
@@ -184,7 +187,25 @@ void MainWindow::onOpenFile()
     progress.setValue(fileSize);
 
     memory_view_->setData(data);
-    heat_map_->updateMap(data);
+
+    std::unique_ptr<StandardMap> standard_map = nullptr;
+    if (MachoMap::isSupported(data)) {
+      printf("Mach-O\n");
+      standard_map = std::make_unique<MachoMap>();
+    }
+    else if (ElfMap::isSupported(data)) {
+      printf("ELF\n");
+      standard_map = std::make_unique<ElfMap>();
+    }
+    else {
+      standard_map = std::make_unique<StandardMap>();
+    }
+
+    if (!standard_map) {
+      standard_map = std::make_unique<StandardMap>();
+    }
+
+    heat_map_->updateMap(data, standard_map.get());
     file.close();
   }
 }

@@ -6,6 +6,7 @@
 #include <QPainter>
 #include <QVector>
 #include <QWidget>
+#include "standard_map.h"
 
 class MemoryView;
 
@@ -14,7 +15,8 @@ class HeatMap : public QWidget {
 
  public:
   explicit HeatMap(QWidget* parent = nullptr);
-  void updateMap(const QVector<quint8>& data);
+  virtual void updateMap(const QVector<quint8>& data,
+                         StandardMap* map_calculator);
   void updateViewRect(uint64_t byte_start, uint64_t byte_end);
   void setMemoryView(MemoryView* memory_view);
 
@@ -25,11 +27,6 @@ class HeatMap : public QWidget {
   void mouseReleaseEvent(QMouseEvent* event) override;
 
  private:
-  struct MapRegion {
-    uint64_t start;
-    uint64_t end;
-    QColor color;
-  };
   QVector<MapRegion> regions_;
   unsigned view_rect_start_;
   unsigned view_rect_end_;

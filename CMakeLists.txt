@@ -24,6 +24,12 @@ add_executable(deephex
     src/mainwindow.h
     src/memoryview.cpp
     src/memoryview.h
+    src/standard_map.cpp
+    src/standard_map.h
+    src/elf_map.cpp
+    src/elf_map.h
+    src/macho_map.cpp
+    src/macho_map.h
 )
 
 target_link_libraries(deephex PRIVATE Qt6::Widgets)
