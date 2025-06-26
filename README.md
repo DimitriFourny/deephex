@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="DeepHex" srcset="img/logo.png 2x">
+</p>
+
 # DeepHex
 
 A simple Qt-based memory viewer application that displays data in a hex format.
@@ -22,7 +26,7 @@ make
 After building, you can run the application:
 
 ```bash
-./memview
+./deephex
 ```
 
 ## Features
@@ -31,7 +35,3 @@ After building, you can run the application:
 - Shows 16 bytes per line
 - Includes memory addresses
 - Clean and readable interface
-
-## Usage
-
-The application currently displays a sample file view.
