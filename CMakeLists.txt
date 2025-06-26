@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(memview VERSION 1.0 LANGUAGES CXX)
+project(deephex VERSION 1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,14 +16,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Enable AddressSanitizer to debug
 # set(SANITIZER_FLAGS "-fsanitize=address -fno-omit-frame-pointer")
 
-add_executable(memview
-    heatmap.cpp
-    heatmap.h
-    main.cpp
-    mainwindow.cpp
-    mainwindow.h
-    memoryview.cpp
-    memoryview.h
+add_executable(deephex
+    src/heatmap.cpp
+    src/heatmap.h
+    src/main.cpp
+    src/mainwindow.cpp
+    src/mainwindow.h
+    src/memoryview.cpp
+    src/memoryview.h
 )
 
-target_link_libraries(memview PRIVATE Qt6::Widgets)
+target_link_libraries(deephex PRIVATE Qt6::Widgets)
