@@ -1,5 +1,5 @@
 <p align="center">
-  <img alt="DeepHex" srcset="img/logo.png 2x">
+  <img alt="DeepHex" width="300" height="215" src="img/logo.png">
 </p>
 
 # DeepHex
