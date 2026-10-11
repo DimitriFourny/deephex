@@ -11,6 +11,8 @@
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIconFile</key><string>favicon.icns</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string>
   <key>CFBundleDocumentTypes</key>
   <array><dict>
     <key>CFBundleTypeName</key><string>Binary File</string>

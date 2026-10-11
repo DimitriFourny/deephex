@@ -1,81 +1,19 @@
 #pragma once
+#import <AppKit/AppKit.h>
+#import "memoryview.h"
 
-#include <QMainWindow>
-#include <QDateTime>
-
-class MemoryView;
-class NativeVibrancy;
-class HeatMap;
-class QLabel;
-class QLineEdit;
-class QComboBox;
-class QTreeWidget;
-class QSplitter;
-class QMenu;
-class QAction;
-class QScrollArea;
-class QToolBar;
-
-class MainWindow : public QMainWindow {
-  Q_OBJECT
-
- public:
-  explicit MainWindow(QWidget* parent = nullptr);
-  ~MainWindow() override;
-  bool openFile(const QString& path);
-  bool saveFile(const QString& path);
-
- protected:
-  void closeEvent(QCloseEvent* event) override;
-  void dragEnterEvent(QDragEnterEvent* event) override;
-  void dropEvent(QDropEvent* event) override;
-  void paintEvent(QPaintEvent* event) override;
-
- private:
-  void chooseFile();
-  bool save(bool saveAs = false);
-  bool maybeSave();
-  void goToOffset();
-  void find(bool backwards = false);
-  void showFind();
-  void updateDocument();
-  void updateSelection();
-  void updateOverview();
-  void updateRecentFiles();
-  void rememberFile(const QString& path);
-  void setAppearance(int appearance);
-  void applyAppearance();
-
-  MemoryView* memory_view_;
-  HeatMap* heat_map_;
-  QSplitter* splitter_;
-  QToolBar* toolbar_;
-  QLabel* overview_legend_;
-  QLabel* file_label_;
-  QLabel* detail_label_;
-  QLabel* selection_label_;
-  QLabel* inspector_;
-  QScrollArea* inspector_scroll_;
-  QLabel* search_status_;
-  QWidget* find_bar_;
-  QLineEdit* search_input_;
-  QComboBox* search_mode_;
-  QComboBox* byte_order_;
-  QTreeWidget* regions_;
-  QMenu* recent_menu_;
-  QAction* save_action_;
-  QAction* save_as_action_;
-  QAction* next_action_;
-  QAction* previous_action_;
-  QAction* transparency_action_;
-  NativeVibrancy* vibrancy_ = nullptr;
-  int appearance_ = 0;
-  bool transparency_preferred_ = true;
-  QString path_;
-  QString last_query_;
-  int last_search_mode_ = -1;
-  int last_match_ = -1;
-  bool document_open_ = false;
-  QDateTime disk_modified_;
-  qint64 disk_size_ = 0;
-};
+@interface DHMainWindowController : NSWindowController <NSWindowDelegate, DHMemoryViewDelegate, NSTableViewDataSource, NSTableViewDelegate, NSToolbarDelegate, NSToolbarItemValidation, NSSplitViewDelegate, NSMenuItemValidation>
+@property(nonatomic, readonly) DHMemoryView *editor;
+- (BOOL)openFile:(NSString *)path;
+- (BOOL)saveFile:(NSString *)path;
+- (BOOL)maybeSave;
+- (void)installMenus;
+- (void)openDocument:(id)sender;
+- (void)saveDocument:(id)sender;
+- (void)saveDocumentAs:(id)sender;
+- (void)showFind:(id)sender;
+- (void)findNext:(id)sender;
+- (void)findPrevious:(id)sender;
+- (void)goToOffset:(id)sender;
+- (void)selectAppearance:(id)sender;
+@end
