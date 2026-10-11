@@ -1,13 +1,14 @@
 # DeepHex
 
-A native Qt 6 binary editor for macOS. Explore hex and ASCII side by side, edit bytes without shifting file offsets, and inspect executable structure and numeric values.
+A macOS binary editor built entirely with AppKit and Objective-C++17. Explore hex and ASCII side by side, edit bytes without shifting file offsets, and inspect executable structure and numeric values. No Qt dependency.
 
-The compact [favicon](favicon.ico) replaces the old logo and is also used for the application and macOS bundle icon. Its vector source is [`img/favicon.svg`](img/favicon.svg).
+The macOS bundle uses [`img/favicon.icns`](img/favicon.icns). Its vector source is [`img/favicon.svg`](img/favicon.svg).
 
-![DeepHex binary editor in Terminal appearance, captured from the native macOS window](img/editor.png)
+![AppKit editor surface and inspector in Terminal appearance](img/editor.png)
 
 ## What's new in 2.0
 
+- Qt has been removed from the application, build, parsers, and tests. The workbench uses native AppKit menus, a customizable toolbar, split views, scroll views, file panels, alerts, clipboard, and undo manager; the binary parsers use standard C++.
 - A resizable workbench with native macOS controls, system/light/dark/terminal appearance, a data inspector, and a navigable file-region sidebar.
 - An overview color legend generated from the displayed regions: zero-filled, ASCII text, and binary distribution bins, or named executable headers/segments. The outlined marker identifies the visible bytes; the legend wraps with the window and follows appearance changes.
 - A virtualized hex/ASCII editor with real vertical and horizontal scrollbars, trackpad scrolling, grouped bytes, keyboard navigation, and drag selection with edge scrolling.
@@ -20,13 +21,11 @@ The compact [favicon](favicon.ico) replaces the old logo and is also used for th
 
 ## Build on macOS
 
-Requires CMake 3.21+, Qt 6.8+, and a C++17 compiler. Install Apple's Command Line Tools if needed (`xcode-select --install`), then:
+Requires macOS 12+, CMake 3.21+, and Apple's C++17/Objective-C++ compiler. Install Apple's Command Line Tools if needed (`xcode-select --install`), then:
 
 ```bash
-brew install qt cmake ninja
-cmake -S . -B build -G Ninja \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+brew install cmake ninja
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build --parallel
 open build/deephex.app
 ```
@@ -37,15 +36,15 @@ Open a file directly from the terminal:
 ./build/deephex.app/Contents/MacOS/deephex /path/to/file.bin
 ```
 
-The build produces a local `.app` bundle, not a signed/notarized distributable. Qt libraries remain provided by Homebrew. For another Qt installation, set `CMAKE_PREFIX_PATH` to its installation prefix. On non-macOS platforms the executable is `build/deephex`.
+The build produces a local `.app` bundle, not a signed/notarized distributable. It links only Apple system frameworks and libraries; no third-party GUI runtime or deployment step is needed. Other operating systems are not supported.
 
 ## Appearance
 
 Choose **View → Appearance → Terminal** for a terminal-inspired charcoal workbench: cyan offsets and headers, teal printable bytes, amber inspector values, muted zero bytes, and subtle purple dividers. Text, caret, and selection colors remain opaque; only the background surfaces are tinted.
 
-On macOS, **Translucent Background** enables native `NSVisualEffectView` behind-window material rather than lowering the whole window's opacity. The material covers the entire native frame, including the title bar; lightweight charcoal overlays tint the editor, sidebar, and controls without covering the effect with nearly opaque backgrounds. It is enabled by default for Terminal and can be turned off for an opaque version of the same palette. macOS **Reduce Transparency** automatically replaces both the material and the clear native backing with opaque backgrounds without forgetting your preference; changing that accessibility setting updates an open window. Unsupported platforms use opaque backgrounds and disable the translucency control.
+**Translucent Background** enables an AppKit `NSVisualEffectView` with behind-window material rather than lowering the whole window's opacity. The material extends through the native title bar; lightweight charcoal overlays tint the editor without dimming its text, caret, or selection. It is enabled by default for Terminal and can be turned off for an opaque version of the same palette. macOS **Reduce Transparency** automatically replaces the material and clear native backing with opaque backgrounds without forgetting your preference; changing that accessibility setting updates an open window.
 
-**System** remains the default. System, Light, and Dark retain their normal palettes. The chosen preset and translucency preference persist between launches; switching them preserves bytes, selection, and undo history. The preview above is a native, window-isolated macOS capture; it does not include the desktop backdrop.
+**System** remains the default. System, Light, and Dark follow AppKit's appearance palettes. The chosen preset and translucency preference persist between launches; switching them preserves bytes, selection, and undo history. The preview above is a rendered AppKit editor surface, excluding the title bar and desktop backdrop.
 
 ## Editing
 
@@ -71,10 +70,10 @@ This is an **overwrite-only, in-memory editor**, supporting files up to **256 Mi
 
 ## Verification
 
-Behavior regression tests cover exact overview coverage, executable byte order and segment offsets, malformed input fallback, overview navigation bounds, empty files, nibble undo/redo and clean-state transitions, atomic overwrite/zero undo, cancel/discard handling without changing disk contents, and preserving document selection and undo/clean state when changing appearance.
+Three regression suites cover contiguous overview coverage, executable endianness and segment offsets, universal Mach-O architectures, malformed input fallback, overview navigation bounds, empty files, selection and keyboard boundaries, drag edge scrolling, nibble undo/redo and clean-state transitions, overwrite/zero undo, strict hex and UTF-8 paste, cancel/discard protection, atomic saves and file permissions, Save As, external-change warnings, search overlap/wraparound, EOF inspector values, and preserving document selection and undo/clean state across appearance changes.
 
 ```bash
 ctest --test-dir build --output-on-failure
 ```
 
-Tests use Qt's offscreen platform and isolated temporary files/settings. Disable the test target with `-DBUILD_TESTING=OFF` if only the application is needed.
+The parser suite is plain C++; editor and document suites exercise real AppKit windows and alerts and require a logged-in macOS GUI session. They use temporary files and separate test preferences; the editor suite restores the system clipboard on successful completion. Disable test targets with `-DBUILD_TESTING=OFF` if only the application is needed.
