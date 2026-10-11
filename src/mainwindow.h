@@ -4,6 +4,7 @@
 #include <QDateTime>
 
 class MemoryView;
+class NativeVibrancy;
 class HeatMap;
 class QLabel;
 class QLineEdit;
@@ -12,12 +13,15 @@ class QTreeWidget;
 class QSplitter;
 class QMenu;
 class QAction;
+class QScrollArea;
+class QToolBar;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
 
  public:
   explicit MainWindow(QWidget* parent = nullptr);
+  ~MainWindow() override;
   bool openFile(const QString& path);
   bool saveFile(const QString& path);
 
@@ -25,6 +29,7 @@ class MainWindow : public QMainWindow {
   void closeEvent(QCloseEvent* event) override;
   void dragEnterEvent(QDragEnterEvent* event) override;
   void dropEvent(QDropEvent* event) override;
+  void paintEvent(QPaintEvent* event) override;
 
  private:
   void chooseFile();
@@ -38,15 +43,19 @@ class MainWindow : public QMainWindow {
   void updateOverview();
   void updateRecentFiles();
   void rememberFile(const QString& path);
+  void setAppearance(int appearance);
+  void applyAppearance();
 
   MemoryView* memory_view_;
   HeatMap* heat_map_;
   QSplitter* splitter_;
+  QToolBar* toolbar_;
   QLabel* overview_legend_;
   QLabel* file_label_;
   QLabel* detail_label_;
   QLabel* selection_label_;
   QLabel* inspector_;
+  QScrollArea* inspector_scroll_;
   QLabel* search_status_;
   QWidget* find_bar_;
   QLineEdit* search_input_;
@@ -58,6 +67,10 @@ class MainWindow : public QMainWindow {
   QAction* save_as_action_;
   QAction* next_action_;
   QAction* previous_action_;
+  QAction* transparency_action_;
+  NativeVibrancy* vibrancy_ = nullptr;
+  int appearance_ = 0;
+  bool transparency_preferred_ = true;
   QString path_;
   QString last_query_;
   int last_search_mode_ = -1;

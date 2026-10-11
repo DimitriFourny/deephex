@@ -3,6 +3,7 @@
 #include "heatmap.h"
 #include "elf_map.h"
 #include "macho_map.h"
+#include "native_vibrancy.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -14,6 +15,7 @@
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
@@ -22,9 +24,11 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QProgressDialog>
+#include <QPainter>
 #include <QSet>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QScrollBar>
 #include <QSettings>
 #include <QScrollArea>
 #include <QSplitter>
@@ -53,6 +57,11 @@ QString fileKind(const QVector<quint8>& data) {
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
+#ifdef Q_OS_MACOS
+  // Qt must know this before the first native window handle is requested.
+  setAttribute(Qt::WA_TranslucentBackground);
+#endif
+  setAutoFillBackground(false);
   setWindowTitle("DeepHex");
   setAcceptDrops(true);
   resize(1180, 760);
@@ -164,13 +173,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
   inspector_->setTextInteractionFlags(Qt::TextSelectableByMouse);
   inspector_->setAlignment(Qt::AlignTop | Qt::AlignLeft);
   inspector_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
-  auto* inspectorScroll = new QScrollArea;
-  inspectorScroll->setObjectName("inspectorScroll");
-  inspectorScroll->setWidgetResizable(true);
-  inspectorScroll->setFrameShape(QFrame::NoFrame);
-  inspectorScroll->setMinimumHeight(120);
-  inspectorScroll->setWidget(inspector_);
-  sideLayout->addWidget(inspectorScroll, 2);
+  inspector_scroll_ = new QScrollArea;
+  inspector_scroll_->setObjectName("inspectorScroll");
+  inspector_scroll_->setWidgetResizable(true);
+  inspector_scroll_->setFrameShape(QFrame::NoFrame);
+  inspector_scroll_->setMinimumHeight(120);
+  inspector_scroll_->setWidget(inspector_);
+  sideLayout->addWidget(inspector_scroll_, 2);
   auto* regionTitle = new QLabel(tr("FILE REGIONS"));
   regionTitle->setFont(smallBold);
   sideLayout->addWidget(regionTitle);
@@ -252,26 +261,39 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
   connect(inspectorAction, &QAction::toggled, sidebar, &QWidget::setVisible);
   auto* appearance = viewMenu->addMenu(tr("Appearance"));
   auto* appearanceGroup = new QActionGroup(this);
-  const QList<Qt::ColorScheme> schemes = {Qt::ColorScheme::Unknown, Qt::ColorScheme::Light, Qt::ColorScheme::Dark};
-  const QStringList schemeNames = {tr("System"), tr("Light"), tr("Dark")};
+  const QStringList schemeNames = {tr("System"), tr("Light"), tr("Dark"), tr("Terminal")};
+  const QStringList schemeObjects = {"appearanceSystem", "appearanceLight", "appearanceDark", "appearanceTerminal"};
   QSettings settings;
-  int storedScheme = qBound(0, settings.value("appearance", 0).toInt(), 2);
-  for (int i = 0; i < schemes.size(); ++i) {
+  const int storedScheme = qBound(0, settings.value("appearance", 0).toInt(), 3);
+  transparency_preferred_ = settings.value("terminalTransparency", true).toBool();
+  for (int i = 0; i < schemeNames.size(); ++i) {
     auto* action = appearance->addAction(schemeNames[i]);
+    action->setObjectName(schemeObjects[i]);
     appearanceGroup->addAction(action);
     action->setCheckable(true);
     action->setChecked(i == storedScheme);
-    connect(action, &QAction::triggered, this, [i, schemes] {
-      qApp->styleHints()->setColorScheme(schemes[i]);
+    connect(action, &QAction::triggered, this, [this, i] {
       QSettings().setValue("appearance", i);
+      setAppearance(i);
     });
   }
-  qApp->styleHints()->setColorScheme(schemes[storedScheme]);
+  appearance->addSeparator();
+  transparency_action_ = appearance->addAction(tr("Translucent Background"));
+  transparency_action_->setObjectName("terminalTransparency");
+  transparency_action_->setCheckable(true);
+  transparency_action_->setChecked(transparency_preferred_);
+  connect(transparency_action_, &QAction::toggled, this, [this](bool enabled) {
+    transparency_preferred_ = enabled;
+    QSettings().setValue("terminalTransparency", enabled);
+    vibrancy_->setEnabled(appearance_ == 3 && enabled);
+    applyAppearance();
+  });
   connect(qApp->styleHints(), &QStyleHints::colorSchemeChanged, this, [this] {
-    QTimer::singleShot(0, this, &MainWindow::updateOverview);
+    // The platform updates its palette after announcing a new color scheme.
+    QTimer::singleShot(0, this, &MainWindow::applyAppearance);
   });
 
-  auto* toolbar = addToolBar(tr("Editor"));
+  auto* toolbar = toolbar_ = addToolBar(tr("Editor"));
   toolbar->setMovable(false);
   toolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
   toolbar->addAction(openAction);
@@ -285,11 +307,156 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
   selection_label_ = new QLabel;
   statusBar()->addWidget(selection_label_, 1);
   statusBar()->addPermanentWidget(new QLabel(tr("OVERWRITE  ·  HEX / ASCII")));
+  vibrancy_ = new NativeVibrancy(this);
+  connect(vibrancy_, &NativeVibrancy::activeChanged, this, &MainWindow::applyAppearance);
+  setAppearance(storedScheme);
   restoreGeometry(settings.value("windowGeometry").toByteArray());
   splitter_->restoreState(settings.value("splitterState").toByteArray());
   updateRecentFiles();
   updateDocument();
   updateSelection();
+}
+
+MainWindow::~MainWindow()
+{
+  // Restore the native content view before QWidget starts tearing down its layout.
+  delete vibrancy_;
+}
+
+void MainWindow::setAppearance(int appearance)
+{
+  appearance_ = appearance;
+  const Qt::ColorScheme scheme = appearance == 0 ? Qt::ColorScheme::Unknown
+                              : appearance == 1 ? Qt::ColorScheme::Light
+                                                : Qt::ColorScheme::Dark;
+  qApp->styleHints()->setColorScheme(scheme);
+  transparency_action_->setEnabled(appearance == 3 && vibrancy_->isSupported());
+  vibrancy_->setEnabled(appearance == 3 && transparency_preferred_);
+  applyAppearance();
+}
+
+void MainWindow::applyAppearance()
+{
+  const bool terminal = appearance_ == 3;
+  const bool translucent = terminal && vibrancy_->isActive();
+  memory_view_->setTerminalTheme(terminal);
+  auto applyContentPalette = [this](const QPalette& colors) {
+    setPalette(colors);
+    // Stylesheet boundaries do not inherit explicit palette roles automatically.
+    const auto applyTree = [&colors](const auto& self, QObject* object) -> void {
+      if (auto* widget = qobject_cast<QWidget*>(object))
+        widget->setPalette(colors);
+      for (QObject* child : object->children())
+        self(self, child);
+    };
+    for (QWidget* root : {centralWidget(), static_cast<QWidget*>(toolbar_),
+                         static_cast<QWidget*>(statusBar())})
+      applyTree(applyTree, root);
+  };
+  if (terminal) {
+    QPalette colors;
+    QColor window("#15161c");
+    window.setAlpha(translucent ? 64 : 255);
+    QColor base("#15161c");
+    // The root tint already covers the grid; only add a light row tint here.
+    base.setAlpha(translucent ? 18 : 255);
+    QColor alternate("#1b1c23");
+    alternate.setAlpha(base.alpha());
+    colors.setColor(QPalette::Window, window);
+    colors.setColor(QPalette::Base, base);
+    colors.setColor(QPalette::AlternateBase, alternate);
+    colors.setColor(QPalette::WindowText, QColor("#d6d8e2"));
+    colors.setColor(QPalette::Text, QColor("#d6d8e2"));
+    QColor button("#252731");
+    button.setAlpha(translucent ? 96 : 255);
+    colors.setColor(QPalette::Button, button);
+    colors.setColor(QPalette::ButtonText, QColor("#d6d8e2"));
+    colors.setColor(QPalette::PlaceholderText, QColor("#727784"));
+    colors.setColor(QPalette::Link, QColor("#20b8df"));
+    colors.setColor(QPalette::LinkVisited, QColor("#83dcd2"));
+    colors.setColor(QPalette::Highlight, QColor("#23617a"));
+    colors.setColor(QPalette::HighlightedText, QColor("#f5f7ff"));
+    colors.setColor(QPalette::Accent, QColor("#20b8df"));
+    colors.setColor(QPalette::Light, QColor("#414350"));
+    colors.setColor(QPalette::Midlight, QColor("#343643"));
+    colors.setColor(QPalette::Mid, QColor("#51445f"));
+    colors.setColor(QPalette::Dark, QColor("#111218"));
+    colors.setColor(QPalette::Shadow, QColor("#111218"));
+    colors.setColor(QPalette::ToolTipBase, QColor("#252731"));
+    colors.setColor(QPalette::ToolTipText, QColor("#d6d8e2"));
+    for (const auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText})
+      colors.setColor(QPalette::Disabled, role, QColor("#727784"));
+    const QString controlBackground = translucent
+        ? QStringLiteral("rgba(37,39,49,96)") : QStringLiteral("#252731");
+    // Scope widget rules to the editor, not native menus or modal dialogs.
+    centralWidget()->setStyleSheet(QStringLiteral(
+        "QLabel { background: transparent; }"
+        "QWidget#findBar { background: transparent; }"
+        "QAbstractScrollArea#hexEditor { border: 1px solid #51445f; }"
+        "QScrollArea#inspectorScroll { background: transparent; border: none; }"
+        "QTreeWidget#fileRegions { background: transparent;"
+        " alternate-background-color: rgba(214,216,226,6); border: 1px solid #51445f; }"
+        "QHeaderView::section { background: transparent; color: #20b8df;"
+        " border: none; border-bottom: 1px solid #51445f; padding: 4px; }"
+        "QLineEdit, QComboBox, QPushButton { color: #d6d8e2;"
+        " background-color: %1; border: 1px solid #51445f;"
+        " border-radius: 4px; padding: 4px 7px; }"
+        "QLineEdit:focus, QComboBox:focus, QPushButton:focus { border-color: #20b8df; }"
+        "QPushButton:pressed { background-color: #343643; }"
+        "QSplitter::handle { background: transparent; }").arg(controlBackground));
+    applyContentPalette(colors);
+    QPalette regionColors = colors;
+    regionColors.setColor(QPalette::Window, Qt::transparent);
+    regionColors.setColor(QPalette::Base, Qt::transparent);
+    regionColors.setColor(QPalette::AlternateBase, QColor(214, 216, 226, 6));
+    regions_->setPalette(regionColors);
+    regions_->viewport()->setPalette(regionColors);
+    QPalette chromeColors = colors;
+    chromeColors.setColor(QPalette::Window, Qt::transparent);
+    chromeColors.setColor(QPalette::Base, Qt::transparent);
+    inspector_scroll_->setPalette(chromeColors);
+    inspector_scroll_->viewport()->setPalette(chromeColors);
+    regions_->header()->setPalette(chromeColors);
+    statusBar()->setStyleSheet(QStringLiteral(
+        "QStatusBar { background: transparent; border-top: 1px solid #51445f; }"
+        "QStatusBar::item { border: none; }"));
+    toolbar_->setStyleSheet(QStringLiteral(
+        "QToolBar { background: transparent; border: none;"
+        " border-bottom: 1px solid #51445f; spacing: 6px; }"
+        "QToolBar::separator { background: #51445f; width: 1px; margin: 5px; }"
+        "QToolButton { color: #20b8df; background: transparent;"
+        " border: none; padding: 5px; }"
+        "QToolButton:disabled { color: #727784; }"
+        "QToolButton:hover { background: #252731; }"));
+  } else {
+    centralWidget()->setStyleSheet(QString());
+    statusBar()->setStyleSheet(QString());
+    toolbar_->setStyleSheet(QString());
+    // An unresolved palette follows the platform again; never copy a stale
+    // Terminal palette into the application or keep its explicit color roles.
+    applyContentPalette(QPalette());
+  }
+  centralWidget()->setAutoFillBackground(false);
+  inspector_->setAutoFillBackground(!terminal);
+  inspector_scroll_->viewport()->setAutoFillBackground(!terminal);
+  // The editor paints Base itself. A second viewport fill would hide the blur.
+  memory_view_->viewport()->setAutoFillBackground(false);
+  memory_view_->viewport()->setAttribute(Qt::WA_OpaquePaintEvent, !translucent);
+  regions_->viewport()->setAttribute(Qt::WA_OpaquePaintEvent, !terminal);
+  updateSelection();
+  updateOverview();
+  update();
+}
+
+void MainWindow::paintEvent(QPaintEvent* event)
+{
+  QMainWindow::paintEvent(event);
+  // One root tint only; central/sidebar widgets propagate this background.
+  // The macOS translucent surface also needs an opaque fill outside Terminal.
+  if (appearance_ == 3 || testAttribute(Qt::WA_TranslucentBackground)) {
+    QPainter painter(this);
+    painter.fillRect(rect(), palette().color(QPalette::Window));
+  }
 }
 
 void MainWindow::chooseFile()
@@ -515,8 +682,10 @@ void MainWindow::updateSelection()
     return value;
   };
   QString html = "<table cellspacing='5'>";
+  const QString valueStyle = appearance_ == 3 ? QStringLiteral(" style='color:#e5bd68'") : QString();
   auto row = [&](const QString& label, const QString& value) {
-    html += "<tr><td>" + label.toHtmlEscaped() + "</td><td>" + value.toHtmlEscaped() + "</td></tr>";
+    html += "<tr><td>" + label.toHtmlEscaped() + "</td><td" + valueStyle + ">" +
+            value.toHtmlEscaped() + "</td></tr>";
   };
   row(tr("Offset"), offsetText(start));
   row(tr("Binary"), QString("%1").arg(data[start], 8, 2, QChar('0')));
@@ -571,12 +740,23 @@ void MainWindow::updateOverview()
   }
   overview_legend_->setText(legend.join(" &nbsp;&nbsp; "));
   overview_legend_->setVisible(!legend.isEmpty());
+  const auto* current = regions_->currentItem();
+  const QVariant currentOffset = current ? current->data(0, Qt::UserRole) : QVariant();
+  const QString currentLabel = current ? current->text(0) : QString();
+  const bool currentSelected = current && current->isSelected();
+  const int regionScroll = regions_->verticalScrollBar()->value();
   regions_->clear();
   for (const auto& region : heat_map_->regions()) {
     auto* item = new QTreeWidgetItem(regions_, {region.label, offsetText(region.start)});
     item->setData(0, Qt::UserRole, QVariant::fromValue<qulonglong>(region.start));
     item->setToolTip(0, tr("%1 bytes · %2–%3").arg(region.end - region.start).arg(offsetText(region.start), offsetText(region.end - 1)));
+    if (currentOffset.isValid() && currentOffset.toULongLong() == region.start &&
+        currentLabel == region.label) {
+      regions_->setCurrentItem(item, 0, QItemSelectionModel::NoUpdate);
+      item->setSelected(currentSelected);
+    }
   }
+  regions_->verticalScrollBar()->setValue(regionScroll);
   updateDocument();
 }
 

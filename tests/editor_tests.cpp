@@ -8,6 +8,7 @@
 #include <QMessageBox>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QAction>
 #include "mainwindow.h"
 #include "heatmap.h"
 #include <limits>
@@ -97,6 +98,44 @@ class EditorTests : public QObject {
     }
     QVERIFY(file.open(QIODevice::ReadOnly));
     QCOMPARE(file.readAll(), QByteArray::fromHex("123456"));
+  }
+  void appearanceChangesPreserveDocumentHistory() {
+    QTemporaryDir files;
+    const QString path = files.filePath("appearance.bin");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(QByteArray::fromHex("123456")), qint64(3));
+    file.close();
+    MainWindow window;
+    window.show();
+    QVERIFY(window.openFile(path));
+    auto* editor = window.findChild<MemoryView*>("hexEditor");
+    QVERIFY(editor);
+    QTest::keyClick(editor, Qt::Key_A);
+    QTest::keyClick(editor, Qt::Key_B);
+    editor->selectRange(0, 2);
+    for (const char* name : {"appearanceTerminal", "appearanceLight",
+                             "appearanceDark", "appearanceSystem"}) {
+      auto* action = window.findChild<QAction*>(name);
+      QVERIFY(action);
+      action->trigger();
+      QCoreApplication::processEvents();
+      QCOMPARE(editor->getData(), QVector<quint8>({0xab, 0x34, 0x56}));
+      QCOMPARE(editor->selectionStart(), 0);
+      QCOMPARE(editor->selectionLength(), 2);
+      QVERIFY(editor->isModified());
+    }
+    QVERIFY(window.saveFile(path));
+    QVERIFY(!editor->isModified());
+    editor->undoStack()->undo();
+    QCOMPARE(editor->getData(), QVector<quint8>({0x12, 0x34, 0x56}));
+    QVERIFY(editor->isModified());
+    editor->undoStack()->redo();
+    QCOMPARE(editor->getData(), QVector<quint8>({0xab, 0x34, 0x56}));
+    QVERIFY(!editor->isModified());
+    QVERIFY(window.close());
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), QByteArray::fromHex("ab3456"));
   }
   void distributionCoverage() {
     StandardMap map;

@@ -104,6 +104,14 @@ MemoryView::~MemoryView()
   undo_stack_.disconnect(this);
 }
 
+void MemoryView::setTerminalTheme(bool enabled)
+{
+  if (terminal_theme_ == enabled)
+    return;
+  terminal_theme_ = enabled;
+  viewport()->update();
+}
+
 void MemoryView::setData(QVector<quint8> data)
 {
   stopDragging();
@@ -291,14 +299,20 @@ void MemoryView::paintEvent(QPaintEvent* event)
   const QPalette colors = palette();
   const QColor base = colors.color(QPalette::Base);
   const QColor text = colors.color(QPalette::Text);
-  const QColor muted = blend(text, base, 48);
-  const QColor printable = blend(text, colors.color(QPalette::Link), 32);
-  const QColor selection = hasFocus() ? colors.color(QPalette::Highlight)
-                                     : blend(colors.color(QPalette::Highlight), base, 45);
+  const QColor muted = terminal_theme_ ? colors.color(QPalette::PlaceholderText)
+                                       : blend(text, base, 48);
+  const QColor printable = terminal_theme_ ? colors.color(QPalette::LinkVisited)
+                                           : blend(text, colors.color(QPalette::Link), 32);
+  QColor selection = hasFocus() ? colors.color(QPalette::Highlight)
+                                : blend(colors.color(QPalette::Highlight), base, 45);
+  selection.setAlpha(255);
   const QColor selected_text = colors.color(QPalette::HighlightedText);
-  painter.fillRect(viewport()->rect(), base);
+  if (!terminal_theme_)
+    painter.fillRect(viewport()->rect(), base);
 
   if (memory_data_.isEmpty()) {
+    if (terminal_theme_)
+      painter.fillRect(viewport()->rect(), base);
     painter.setPen(muted);
     painter.drawText(viewport()->rect(), Qt::AlignCenter,
                      tr("No bytes to display\nOpen a file to begin editing."));
@@ -313,15 +327,28 @@ void MemoryView::paintEvent(QPaintEvent* event)
   const int row_count = (int(memory_data_.size()) - 1) / kBytesPerRow + 1;
   const int visible = qMax(0, (viewport()->height() - header_height_ +
                              row_height_ - 1) / row_height_);
+  const int last_row = qMin(row_count, first_row + visible);
+  const QColor alternate = terminal_theme_ ? colors.color(QPalette::AlternateBase)
+                                           : blend(base, text, 3);
+  if (terminal_theme_) {
+    // Paint the Base tint once, not again over a previously filled viewport.
+    painter.fillRect(horizontal, 0, viewport()->width(), header_height_, base);
+    const int bottom = header_height_ + (last_row - first_row) * row_height_;
+    if (bottom < viewport()->height())
+      painter.fillRect(horizontal, bottom, viewport()->width(),
+                       viewport()->height() - bottom, base);
+  }
   painter.save();
   painter.setClipRect(horizontal, header_height_, viewport()->width(),
                       qMax(0, viewport()->height() - header_height_));
-  for (int row = first_row; row < qMin(row_count, first_row + visible); ++row) {
+  for (int row = first_row; row < last_row; ++row) {
     const int y = header_height_ + (row - first_row) * row_height_;
-    if (row & 1)
+    if (terminal_theme_)
       painter.fillRect(horizontal, y, viewport()->width(), row_height_,
-                       blend(base, text, 3));
-    painter.setPen(muted);
+                       row & 1 ? alternate : base);
+    else if (row & 1)
+      painter.fillRect(horizontal, y, viewport()->width(), row_height_, alternate);
+    painter.setPen(terminal_theme_ ? colors.color(QPalette::Link) : muted);
     painter.drawText(char_width_, y, char_width_ * 8, row_height_,
                      Qt::AlignRight | Qt::AlignVCenter,
                      QStringLiteral("%1").arg(qulonglong(row) * kBytesPerRow,
@@ -364,9 +391,10 @@ void MemoryView::paintEvent(QPaintEvent* event)
   }
   painter.restore();
 
-  painter.fillRect(horizontal, 0, viewport()->width(), header_height_,
-                   colors.color(QPalette::Window));
-  painter.setPen(muted);
+  if (!terminal_theme_)
+    painter.fillRect(horizontal, 0, viewport()->width(), header_height_,
+                     colors.color(QPalette::Window));
+  painter.setPen(terminal_theme_ ? colors.color(QPalette::Link) : muted);
   painter.drawText(char_width_, 0, char_width_ * 8, header_height_,
                    Qt::AlignRight | Qt::AlignVCenter, tr("OFFSET"));
   for (int column = 0; column < kBytesPerRow; ++column) {
@@ -376,7 +404,7 @@ void MemoryView::paintEvent(QPaintEvent* event)
   }
   painter.drawText(ascii_start_, 0, char_width_ * kBytesPerRow, header_height_,
                    Qt::AlignLeft | Qt::AlignVCenter, tr("ASCII"));
-  painter.setPen(blend(text, base, 80));
+  painter.setPen(terminal_theme_ ? colors.color(QPalette::Mid) : blend(text, base, 80));
   painter.drawLine(horizontal, header_height_ - 1,
                    horizontal + viewport()->width(), header_height_ - 1);
 }

@@ -26,6 +26,7 @@ class MemoryView : public QAbstractScrollArea {
   QUndoStack* undoStack();
   bool isModified() const;
   void markSaved();
+  void setTerminalTheme(bool enabled);
 
  public slots:
   void copySelection();
@@ -68,6 +69,7 @@ class MemoryView : public QAbstractScrollArea {
   quint64 edit_token_ = 0;
   bool pushing_command_ = false;
   bool dragging_ = false;
+  bool terminal_theme_ = false;
   QPoint drag_position_;
   int char_width_ = 1;
   int row_height_ = 1;
