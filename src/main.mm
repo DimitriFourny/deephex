@@ -11,6 +11,9 @@
 - (void)applicationDidFinishLaunching:(NSNotification*)notification
 {
   (void)notification;
+  NSApp.applicationIconImage = [[NSImage alloc]
+      initWithContentsOfURL:[NSBundle.mainBundle URLForResource:@"favicon"
+                                                  withExtension:@"icns"]];
   self.controller = [[DHMainWindowController alloc] init];
   [self.controller installMenus];
   [self.controller showWindow:nil];

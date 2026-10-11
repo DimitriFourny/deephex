@@ -838,10 +838,10 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
 - (void)drawRect:(NSRect)dirtyRect
 {
   NSRect visible = self.visibleRect;
-  NSColor* base = _terminalTheme ? rgb(.055, .065, .08, _translucent ? .24 : 1)
+  NSColor* base = _terminalTheme ? rgb(.055, .065, .08, _translucent ? .04 : 1)
                                  : NSColor.textBackgroundColor;
   NSColor* alternate =
-      _terminalTheme ? rgb(.12, .10, .17, _translucent ? .30 : 1)
+      _terminalTheme ? rgb(.12, .10, .17, _translucent ? .07 : 1)
                      : NSColor.alternatingContentBackgroundColors.lastObject;
   NSColor* text = _terminalTheme ? rgb(.86, .89, .91) : NSColor.textColor;
   NSColor* muted =

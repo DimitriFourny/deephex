@@ -101,12 +101,17 @@ int main()
     }
                                          ofItemAtPath:path
                                                 error:nil]);
+    NSApp.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     DHMainWindowController* window = [[DHMainWindowController alloc] init];
     [window installMenus];
     [window showWindow:nil];
     pump();
     CHECK([window openFile:path]);
     DHMemoryView* editor = window.editor;
+    CHECK(editor.terminalTheme);
+    CHECK(editor.translucent ==
+          !NSWorkspace.sharedWorkspace
+               .accessibilityDisplayShouldReduceTransparency);
     type(editor, @"a");
     CHECK(editor.modified);
     clickAlert(@"Cancel");
@@ -123,7 +128,7 @@ int main()
     type(editor, @"a");
     type(editor, @"b");
     [editor selectRange:0 length:2];
-    for (NSInteger appearance : {3, 1, 2, 0}) {
+    for (NSInteger appearance : {2, 1, 0}) {
       NSMenuItem* item = [[NSMenuItem alloc] init];
       item.tag = appearance;
       [window selectAppearance:item];
@@ -132,6 +137,20 @@ int main()
       CHECK(editor.selectionStart == 0 && editor.selectionLength == 2 &&
             editor.modified);
     }
+    // System appearance must switch the editor palette and material, not just
+    // recolor the overview. Neither transition may touch the document history.
+    NSApp.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+    pump();
+    CHECK(!editor.terminalTheme && !editor.translucent && window.window.opaque);
+    NSApp.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    pump();
+    CHECK(editor.terminalTheme);
+    CHECK(editor.translucent ==
+          !NSWorkspace.sharedWorkspace
+               .accessibilityDisplayShouldReduceTransparency);
+    CHECK([editor data] == std::vector<uint8_t>({0xab, 0x34, 0x56}));
+    CHECK(editor.selectionStart == 0 && editor.selectionLength == 2 &&
+          editor.modified);
     CHECK([window saveFile:path]);
     CHECK(!editor.modified);
     CHECK([disk(path) isEqual:bytes({0xab, 0x34, 0x56})]);
@@ -192,6 +211,15 @@ int main()
     [window.window performClose:nil];
     CHECK([NSFileManager.defaultManager removeItemAtPath:directory error:nil]);
     [NSUserDefaults.standardUserDefaults removePersistentDomainForName:domain];
+    // A persisted Terminal choice from the four-preset menu remains Terminal.
+    [NSUserDefaults.standardUserDefaults setInteger:3 forKey:@"appearance"];
+    DHMainWindowController* restored = [[DHMainWindowController alloc] init];
+    CHECK(restored.editor.terminalTheme);
+    CHECK([NSUserDefaults.standardUserDefaults integerForKey:@"appearance"] ==
+          2);
+    [restored.window close];
+    [NSUserDefaults.standardUserDefaults removePersistentDomainForName:domain];
+    NSApp.appearance = nil;
     std::puts("PASS: native document cancel/discard, appearance/history, "
               "atomic save/save-as, external-change protection, search "
               "wrap/overlap, EOF inspector");

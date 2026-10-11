@@ -72,6 +72,8 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
 
 @interface DHMainWindowController ()
 - (void)updateOverview;
+- (BOOL)usesTerminalAppearance;
+- (void)refreshAppearance;
 @end
 
 @interface DHWorkbenchView : NSVisualEffectView
@@ -89,7 +91,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
 - (void)viewDidChangeEffectiveAppearance
 {
   [super viewDidChangeEffectiveAppearance];
-  [self.controller updateOverview];
+  [self.controller refreshAppearance];
 }
 - (void)drawRect:(NSRect)rect
 {
@@ -98,7 +100,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
                        ? [NSColor colorWithSRGBRed:0.082
                                              green:0.086
                                               blue:0.11
-                                             alpha:self.translucent ? 0.25 : 1]
+                                             alpha:self.translucent ? 0.08 : 1]
                        : NSColor.windowBackgroundColor;
   [color setFill];
   NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
@@ -170,12 +172,14 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
     @"appearance" : @0,
     @"showInspector" : @YES
   }];
-  _appearance =
-      std::clamp<NSInteger>([defaults integerForKey:@"appearance"], 0, 3);
+  NSInteger storedAppearance = [defaults integerForKey:@"appearance"];
+  _appearance = std::clamp<NSInteger>(storedAppearance, 0, 2);
+  if (_appearance != storedAppearance)
+    [defaults setInteger:_appearance forKey:@"appearance"];
   _transparencyPreferred = [defaults boolForKey:@"terminalTransparency"];
   _root = [[DHWorkbenchView alloc] initWithFrame:window.contentView.bounds];
   _root.controller = self;
-  _root.material = NSVisualEffectMaterialUnderWindowBackground;
+  _root.material = NSVisualEffectMaterialHUDWindow;
   _root.blendingMode = NSVisualEffectBlendingModeBehindWindow;
   _root.state = NSVisualEffectStateActive;
   window.contentView = _root;
@@ -391,7 +395,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
       menuItem(view, @"Show Inspector", @selector(toggleInspector:), @"", self);
   _appearanceMenu = submenu(view, @"Appearance");
   NSInteger i = 0;
-  for (NSString* name in @[ @"System", @"Light", @"Dark", @"Terminal" ]) {
+  for (NSString* name in @[ @"System", @"Light", @"Terminal" ]) {
     NSMenuItem* item = menuItem(_appearanceMenu, name,
                                 @selector(selectAppearance:), @"", self);
     item.tag = i++;
@@ -469,7 +473,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
       item.action == @selector(goToOffset:))
     return _path && !_loading;
   if (item.action == @selector(toggleTransparency:))
-    return _appearance == 3;
+    return [self usesTerminalAppearance];
   if (item.action == @selector(openDocument:) ||
       item.action == @selector(openRecent:))
     return !_loading;
@@ -1133,7 +1137,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
 }
 - (void)selectAppearance:(id)sender
 {
-  _appearance = std::clamp<NSInteger>([sender tag], 0, 3);
+  _appearance = std::clamp<NSInteger>([sender tag], 0, 2);
   [NSUserDefaults.standardUserDefaults setInteger:_appearance
                                            forKey:@"appearance"];
   [self applyAppearance];
@@ -1145,6 +1149,14 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   [NSUserDefaults.standardUserDefaults setBool:_transparencyPreferred
                                         forKey:@"terminalTransparency"];
   [self applyAppearance];
+}
+- (BOOL)usesTerminalAppearance
+{
+  return _appearance == 2 ||
+         (_appearance == 0 &&
+          [[self.window.effectiveAppearance bestMatchFromAppearancesWithNames:@[
+            NSAppearanceNameAqua, NSAppearanceNameDarkAqua
+          ]] isEqual:NSAppearanceNameDarkAqua]);
 }
 - (void)accessibilityChanged:(NSNotification*)notification
 {
@@ -1159,7 +1171,13 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
           : [NSAppearance appearanceNamed:_appearance == 1
                                               ? NSAppearanceNameAqua
                                               : NSAppearanceNameDarkAqua];
-  BOOL terminal = _appearance == 3;
+  [self refreshAppearance];
+}
+- (void)refreshAppearance
+{
+  if (!_editor)
+    return;
+  BOOL terminal = [self usesTerminalAppearance];
   BOOL translucent =
       terminal && _transparencyPreferred &&
       !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency;
@@ -1181,6 +1199,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   _regionScroll.drawsBackground = !translucent;
   _regionTable.backgroundColor =
       translucent ? NSColor.clearColor : NSColor.controlBackgroundColor;
+  _regionTable.usesAlternatingRowBackgroundColors = !translucent;
   _inspector.textColor = terminal ? [NSColor colorWithSRGBRed:0.90
                                                         green:0.74
                                                          blue:0.41
