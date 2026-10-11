@@ -1,211 +1,603 @@
 #include "mainwindow.h"
-#include <QtWidgets/qwidget.h>
+#include "memoryview.h"
+#include "heatmap.h"
+#include "elf_map.h"
+#include "macho_map.h"
+
 #include <QAction>
-#include <QFile>
+#include <QActionGroup>
+#include <QApplication>
+#include <QCloseEvent>
+#include <QComboBox>
+#include <QDragEnterEvent>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QFontDatabase>
+#include <QHeaderView>
 #include <QInputDialog>
+#include <QLabel>
+#include <QLineEdit>
+#include <QLocale>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QProgressDialog>
+#include <QSet>
+#include <QPushButton>
+#include <QSaveFile>
+#include <QSettings>
 #include <QScrollArea>
+#include <QSplitter>
 #include <QStatusBar>
+#include <QStyleHints>
+#include <QTimer>
+#include <QToolBar>
+#include <QTreeWidget>
+#include <QUndoStack>
 #include <QVBoxLayout>
-#include <QWidget>
-#include "elf_map.h"
-#include "heatmap.h"
-#include "macho_map.h"
-#include "standard_map.h"
+#include <QtEndian>
+#include <cstring>
+#include <memory>
+
+namespace {
+constexpr qint64 MaxFileSize = 256 * 1024 * 1024;
+QString offsetText(quint64 offset) {
+  return QString("0x%1").arg(offset, 8, 16, QChar('0')).toUpper().replace("0X", "0x");
+}
+QString fileKind(const QVector<quint8>& data) {
+  if (MachoMap::isSupported(data)) return "Mach-O executable";
+  if (ElfMap::isSupported(data)) return "ELF executable";
+  return "Binary file";
+}
+}
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
   setWindowTitle("DeepHex");
-  resize(900, 600);
+  setAcceptDrops(true);
+  resize(1180, 760);
+  setMinimumSize(780, 480);
 
-  // Create central widget and layout
-  QWidget* centralWidget = new QWidget(this);
-  setCentralWidget(centralWidget);
-  QVBoxLayout* layout = new QVBoxLayout(centralWidget);
-  layout->setContentsMargins(0, 0, 0, 0);
+  auto* fileMenu = menuBar()->addMenu(tr("&File"));
+  auto* openAction = fileMenu->addAction(tr("&Open…"), QKeySequence::Open, this, &MainWindow::chooseFile);
+  openAction->setObjectName("openFile");
+  recent_menu_ = fileMenu->addMenu(tr("Open Recent"));
+  fileMenu->addSeparator();
+  save_action_ = fileMenu->addAction(tr("&Save"), QKeySequence::Save, this, [this] { save(); });
+  save_action_->setObjectName("saveFile");
+  save_as_action_ = fileMenu->addAction(tr("Save &As…"), QKeySequence::SaveAs, this, [this] { save(true); });
+  fileMenu->addSeparator();
+  fileMenu->addAction(tr("Close Window"), QKeySequence::Close, this, &QWidget::close);
+  fileMenu->addAction(tr("Quit DeepHex"), QKeySequence::Quit, qApp, &QApplication::closeAllWindows);
 
-  // Create a memory heat map
+  auto* central = new QWidget(this);
+  auto* layout = new QVBoxLayout(central);
+  layout->setContentsMargins(20, 16, 20, 12);
+  layout->setSpacing(12);
+  setCentralWidget(central);
+  auto* heading = new QHBoxLayout;
+  auto* titles = new QVBoxLayout;
+  file_label_ = new QLabel(tr("Open a file to explore"));
+  QFont titleFont = font();
+  titleFont.setPointSize(titleFont.pointSize() + 5);
+  titleFont.setBold(true);
+  file_label_->setFont(titleFont);
+  file_label_->setTextFormat(Qt::PlainText);
+  detail_label_ = new QLabel(tr("Drop a file here, or press ⌘O. Changes overwrite bytes without shifting offsets."));
+  detail_label_->setTextFormat(Qt::PlainText);
+  detail_label_->setForegroundRole(QPalette::PlaceholderText);
+  titles->addWidget(file_label_);
+  titles->addWidget(detail_label_);
+  heading->addLayout(titles, 1);
+  auto* openButton = new QPushButton(tr("Open File…"));
+  connect(openButton, &QPushButton::clicked, this, &MainWindow::chooseFile);
+  heading->addWidget(openButton);
+  layout->addLayout(heading);
+
   heat_map_ = new HeatMap(this);
+  heat_map_->setToolTip(tr("File overview · click or drag to navigate"));
   layout->addWidget(heat_map_);
+  overview_legend_ = new QLabel;
+  overview_legend_->setObjectName("overviewLegend");
+  overview_legend_->setTextFormat(Qt::RichText);
+  overview_legend_->setWordWrap(true);
+  overview_legend_->setForegroundRole(QPalette::PlaceholderText);
+  overview_legend_->setToolTip(tr("Colors describe file contents, not edits. Distribution bins are zero-filled or ASCII when at least half their bytes match; otherwise they are binary. The outlined marker shows the visible bytes."));
+  overview_legend_->hide();
+  layout->addWidget(overview_legend_);
 
-  // Create and add memory view
+  find_bar_ = new QWidget;
+  find_bar_->setObjectName("findBar");
+  auto* findLayout = new QHBoxLayout(find_bar_);
+  findLayout->setContentsMargins(0, 0, 0, 0);
+  search_mode_ = new QComboBox;
+  search_mode_->setObjectName("searchMode");
+  search_mode_->addItems({tr("Hex bytes"), tr("UTF-8 text")});
+  search_input_ = new QLineEdit;
+  search_input_->setObjectName("searchInput");
+  search_input_->setPlaceholderText(tr("e.g. 48 65 6C 6C 6F"));
+  search_input_->setClearButtonEnabled(true);
+  search_status_ = new QLabel;
+  search_status_->setObjectName("searchStatus");
+  search_status_->setTextFormat(Qt::PlainText);
+  auto* prevButton = new QPushButton(tr("Previous"));
+  auto* nextButton = new QPushButton(tr("Next"));
+  auto* closeFind = new QPushButton(tr("Done"));
+  findLayout->addWidget(search_mode_);
+  findLayout->addWidget(search_input_, 1);
+  findLayout->addWidget(search_status_);
+  findLayout->addWidget(prevButton);
+  findLayout->addWidget(nextButton);
+  findLayout->addWidget(closeFind);
+  connect(prevButton, &QPushButton::clicked, this, [this] { find(true); });
+  connect(nextButton, &QPushButton::clicked, this, [this] { find(); });
+  connect(search_input_, &QLineEdit::returnPressed, this, [this] { find(); });
+  connect(closeFind, &QPushButton::clicked, this, [this] { find_bar_->hide(); memory_view_->setFocus(); });
+  connect(search_mode_, &QComboBox::currentIndexChanged, this, [this](int mode) {
+    search_input_->setPlaceholderText(mode == 0 ? tr("e.g. 48 65 6C 6C 6F") : tr("Case-sensitive UTF-8 text"));
+    search_status_->clear();
+  });
+  connect(search_input_, &QLineEdit::textChanged, search_status_, &QLabel::clear);
+  layout->addWidget(find_bar_);
+  find_bar_->hide();
+
+  splitter_ = new QSplitter;
   memory_view_ = new MemoryView(this, heat_map_);
-  layout->addWidget(memory_view_);
+  memory_view_->setObjectName("hexEditor");
   heat_map_->setMemoryView(memory_view_);
-
-  // Add random data for demonstration
-  // QVector<quint8> data;
-  // for (int i = 0; i < 0x1000; i++) {
-  //   uint8_t n = rand() % 256;
-  //   if (n > 150) {
-  //     n = 0;
-  //   }
-  //   data.append(n);
-  // }
-  // memory_view_->setData(data);
-  // heat_map_->updateMap(data);
-
-  // Add File menu for opening files
-  QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
-  QAction* openFileAction = new QAction(tr("Open..."), this);
-  fileMenu->addAction(openFileAction);
-
-  // Add Save As action
-  QAction* saveFileAction = new QAction(tr("Save As..."), this);
-  fileMenu->addAction(saveFileAction);
-  connect(saveFileAction, &QAction::triggered, this, [this]() {
-    QString fileName = QFileDialog::getSaveFileName(
-        this, tr("Save File"), QString(), tr("All Files (*)"));
-    if (!fileName.isEmpty()) {
-      QFile file(fileName);
-      if (!file.open(QIODevice::WriteOnly)) {
-        QMessageBox::warning(this, tr("Error"), tr("Failed to save file."));
-        return;
-      }
-      // Assuming memory_view_ has a method to get current data as
-      // QVector<quint8>
-      const QVector<quint8> data = memory_view_->getData();
-      QByteArray fileData;
-      fileData.reserve(data.size());
-      for (quint8 byte : data) {
-        fileData.append(static_cast<char>(byte));
-      }
-      file.write(fileData);
-      file.close();
-    }
+  splitter_->addWidget(memory_view_);
+  auto* sidebar = new QWidget;
+  auto* sideLayout = new QVBoxLayout(sidebar);
+  sideLayout->setContentsMargins(12, 0, 0, 0);
+  auto* inspectorTitle = new QLabel(tr("DATA INSPECTOR"));
+  QFont smallBold = font();
+  smallBold.setBold(true);
+  inspectorTitle->setFont(smallBold);
+  sideLayout->addWidget(inspectorTitle);
+  byte_order_ = new QComboBox;
+  byte_order_->addItems({tr("Little endian"), tr("Big endian")});
+  byte_order_->setObjectName("byteOrder");
+  sideLayout->addWidget(byte_order_);
+  inspector_ = new QLabel;
+  inspector_->setObjectName("dataInspector");
+  inspector_->setTextFormat(Qt::RichText);
+  inspector_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  inspector_->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+  inspector_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+  auto* inspectorScroll = new QScrollArea;
+  inspectorScroll->setObjectName("inspectorScroll");
+  inspectorScroll->setWidgetResizable(true);
+  inspectorScroll->setFrameShape(QFrame::NoFrame);
+  inspectorScroll->setMinimumHeight(120);
+  inspectorScroll->setWidget(inspector_);
+  sideLayout->addWidget(inspectorScroll, 2);
+  auto* regionTitle = new QLabel(tr("FILE REGIONS"));
+  regionTitle->setFont(smallBold);
+  sideLayout->addWidget(regionTitle);
+  regions_ = new QTreeWidget;
+  regions_->setObjectName("fileRegions");
+  regions_->setHeaderLabels({tr("Region"), tr("Offset")});
+  regions_->setRootIsDecorated(false);
+  regions_->setAlternatingRowColors(true);
+  regions_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+  regions_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+  sideLayout->addWidget(regions_, 1);
+  sidebar->setMinimumWidth(240);
+  splitter_->addWidget(sidebar);
+  splitter_->setStretchFactor(0, 1);
+  splitter_->setStretchFactor(1, 0);
+  splitter_->setSizes({850, 270});
+  layout->addWidget(splitter_, 1);
+  connect(regions_, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem* item) {
+    memory_view_->moveToPos(item->data(0, Qt::UserRole).toULongLong(), true);
+    memory_view_->setFocus();
+  });
+  connect(byte_order_, &QComboBox::currentIndexChanged, this, &MainWindow::updateSelection);
+  connect(memory_view_, &MemoryView::selectionChanged, this, &MainWindow::updateSelection);
+  connect(memory_view_, &MemoryView::modifiedChanged, this, &MainWindow::updateDocument);
+  // Coalesce a burst of edits; parsing happens outside the key event, not in paintEvent.
+  auto* overviewTimer = new QTimer(this);
+  overviewTimer->setSingleShot(true);
+  overviewTimer->setInterval(200);
+  connect(overviewTimer, &QTimer::timeout, this, &MainWindow::updateOverview);
+  connect(memory_view_, &MemoryView::dataChanged, this, [this, overviewTimer] {
+    updateSelection();
+    search_status_->clear();
+    last_match_ = -1;
+    overviewTimer->start();
   });
 
-  // Add menu for Memory Tree
-  QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
-  QAction* showTreeAction = new QAction(tr("Show Memory Tree"), this);
-  viewMenu->addAction(showTreeAction);
+  auto* editMenu = menuBar()->addMenu(tr("&Edit"));
+  auto* undoAction = memory_view_->undoStack()->createUndoAction(this, tr("Undo"));
+  undoAction->setShortcut(QKeySequence::Undo);
+  editMenu->addAction(undoAction);
+  auto* redoAction = memory_view_->undoStack()->createRedoAction(this, tr("Redo"));
+  redoAction->setShortcut(QKeySequence::Redo);
+  editMenu->addAction(redoAction);
+  for (auto* action : {undoAction, redoAction}) {
+    action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    memory_view_->addAction(action);
+  }
+  editMenu->addSeparator();
+  auto* copyAction = editMenu->addAction(tr("Copy as Hex"), QKeySequence::Copy, memory_view_, &MemoryView::copySelection);
+  auto* pasteAction = editMenu->addAction(tr("Paste / Overwrite"), QKeySequence::Paste, memory_view_, &MemoryView::pasteClipboard);
+  auto* allAction = editMenu->addAction(tr("Select All"), QKeySequence::SelectAll, memory_view_, &MemoryView::selectAll);
+  // The active text field must retain standard editing shortcuts during search/dialog input.
+  for (auto* action : {copyAction, pasteAction, allAction}) {
+    action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    memory_view_->addAction(action);
+  }
+  auto* zeroAction = editMenu->addAction(tr("Zero Selected Bytes"), memory_view_, &MemoryView::zeroSelection);
+  connect(memory_view_, &MemoryView::selectionChanged, this, [this, copyAction, pasteAction, zeroAction, allAction] {
+    const bool selected = memory_view_->selectionLength() > 0;
+    copyAction->setEnabled(selected);
+    pasteAction->setEnabled(selected);
+    zeroAction->setEnabled(selected);
+    allAction->setEnabled(!memory_view_->getData().isEmpty());
+  });
+  copyAction->setEnabled(false);
+  pasteAction->setEnabled(false);
+  zeroAction->setEnabled(false);
+  allAction->setEnabled(false);
+  editMenu->addSeparator();
+  auto* findAction = editMenu->addAction(tr("Find…"), QKeySequence::Find, this, &MainWindow::showFind);
+  next_action_ = editMenu->addAction(tr("Find Next"), QKeySequence::FindNext, this, [this] { find(); });
+  previous_action_ = editMenu->addAction(tr("Find Previous"), QKeySequence::FindPrevious, this, [this] { find(true); });
+  auto* gotoAction = editMenu->addAction(tr("Go to Offset…"), QKeySequence("Ctrl+L"), this, &MainWindow::goToOffset);
+  gotoAction->setObjectName("goToOffset");
+  auto* viewMenu = menuBar()->addMenu(tr("&View"));
+  auto* inspectorAction = viewMenu->addAction(tr("Show Inspector"));
+  inspectorAction->setCheckable(true);
+  inspectorAction->setChecked(true);
+  connect(inspectorAction, &QAction::toggled, sidebar, &QWidget::setVisible);
+  auto* appearance = viewMenu->addMenu(tr("Appearance"));
+  auto* appearanceGroup = new QActionGroup(this);
+  const QList<Qt::ColorScheme> schemes = {Qt::ColorScheme::Unknown, Qt::ColorScheme::Light, Qt::ColorScheme::Dark};
+  const QStringList schemeNames = {tr("System"), tr("Light"), tr("Dark")};
+  QSettings settings;
+  int storedScheme = qBound(0, settings.value("appearance", 0).toInt(), 2);
+  for (int i = 0; i < schemes.size(); ++i) {
+    auto* action = appearance->addAction(schemeNames[i]);
+    appearanceGroup->addAction(action);
+    action->setCheckable(true);
+    action->setChecked(i == storedScheme);
+    connect(action, &QAction::triggered, this, [i, schemes] {
+      qApp->styleHints()->setColorScheme(schemes[i]);
+      QSettings().setValue("appearance", i);
+    });
+  }
+  qApp->styleHints()->setColorScheme(schemes[storedScheme]);
+  connect(qApp->styleHints(), &QStyleHints::colorSchemeChanged, this, [this] {
+    QTimer::singleShot(0, this, &MainWindow::updateOverview);
+  });
 
-  // Add Action -> Go to menu
-  QMenu* actionMenu = menuBar()->addMenu(tr("&Action"));
-  goToAction_ = new QAction(tr("Go to"), this);
-  goToAction_->setShortcut(QKeySequence(Qt::Key_G));
-  actionMenu->addAction(goToAction_);
-  connect(goToAction_, &QAction::triggered, this, &MainWindow::onGoToAddress);
-
-  connect(openFileAction, &QAction::triggered, this, &MainWindow::onOpenFile);
-
-  // Add status bar below the MemoryView
-  QStatusBar* statusBarWidget = new QStatusBar(this);
-  setStatusBar(statusBarWidget);
-  memory_view_->setStatusBar(statusBarWidget);
+  auto* toolbar = addToolBar(tr("Editor"));
+  toolbar->setMovable(false);
+  toolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  toolbar->addAction(openAction);
+  toolbar->addAction(save_action_);
+  toolbar->addSeparator();
+  toolbar->addAction(undoAction);
+  toolbar->addAction(redoAction);
+  toolbar->addSeparator();
+  toolbar->addAction(findAction);
+  toolbar->addAction(gotoAction);
+  selection_label_ = new QLabel;
+  statusBar()->addWidget(selection_label_, 1);
+  statusBar()->addPermanentWidget(new QLabel(tr("OVERWRITE  ·  HEX / ASCII")));
+  restoreGeometry(settings.value("windowGeometry").toByteArray());
+  splitter_->restoreState(settings.value("splitterState").toByteArray());
+  updateRecentFiles();
+  updateDocument();
+  updateSelection();
 }
 
-void MainWindow::onGoToAddress()
+void MainWindow::chooseFile()
 {
-  bool ok = false;
-  QString addrStr = QInputDialog::getText(this, tr("Go to Address"),
-                                          tr("Enter address (hex or decimal):"),
-                                          QLineEdit::Normal, QString(), &ok);
-  if (!ok || addrStr.isEmpty())
-    return;
-
-  bool hex = addrStr.startsWith("0x", Qt::CaseInsensitive);
-  bool okNum = false;
-  quint64 addr = addrStr.toULongLong(&okNum, hex ? 16 : 10);
-  if (!okNum) {
-    QMessageBox::warning(this, tr("Invalid Address"),
-                         tr("Could not parse address."));
-    return;
-  }
-
-  // Assuming you have a pointer to your MemoryView instance called memoryView_
-  if (memory_view_) {
-    memory_view_->moveToPos(addr, true);
-  }
+  const QString file = QFileDialog::getOpenFileName(this, tr("Open Binary File"), path_);
+  if (!file.isEmpty()) openFile(file);
 }
 
-void MainWindow::onOpenFile()
+bool MainWindow::openFile(const QString& path)
 {
-  QString fileName = QFileDialog::getOpenFileName(
-      this, tr("Open File"), QString(), tr("All Files (*)"));
-  if (!fileName.isEmpty()) {
-    QFile file(fileName);
-    if (!file.open(QIODevice::ReadOnly)) {
-      QMessageBox::warning(this, tr("Error"), tr("Failed to open file."));
-      return;
+  if (!maybeSave()) return false;
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    QMessageBox::warning(this, tr("Cannot Open File"), file.errorString());
+    return false;
+  }
+  const qint64 size = file.size();
+  if (size < 0 || size > MaxFileSize) {
+    QMessageBox::warning(this, tr("File Too Large"), tr("This in-memory editor supports files up to 256 MiB."));
+    return false;
+  }
+  QVector<quint8> data;
+  data.resize(size);
+  QProgressDialog progress(tr("Opening file…"), tr("Cancel"), 0, 100, this);
+  progress.setWindowModality(Qt::WindowModal);
+  progress.setMinimumDuration(500);
+  qint64 read = 0;
+  while (read < size) {
+    const qint64 count = file.read(reinterpret_cast<char*>(data.data()) + read, qMin<qint64>(1024 * 1024, size - read));
+    if (count <= 0) {
+      QMessageBox::warning(this, tr("Cannot Read File"), count < 0 ? file.errorString() : tr("The file changed while it was being read."));
+      return false;
     }
+    read += count;
+    progress.setValue(int(read * 100 / size));
+    if (progress.wasCanceled()) return false;
+  }
+  progress.setValue(100);
+  path_ = QFileInfo(path).absoluteFilePath();
+  document_open_ = true;
+  disk_modified_ = QFileInfo(path_).lastModified();
+  disk_size_ = size;
+  memory_view_->setData(std::move(data));
+  search_status_->clear();
+  updateOverview();
+  updateDocument();
+  updateSelection();
+  rememberFile(path_);
+  memory_view_->setFocus();
+  return true;
+}
 
-    qint64 fileSize = file.size();
-    const qint64 chunkSize = 1024 * 1024;  // 1 MB
-    QByteArray fileData;
-    QVector<quint8> data;
-    data.reserve(fileSize);
+bool MainWindow::saveFile(const QString& path)
+{
+  if (!document_open_) return false;
+  const QString target = QFileInfo(path).absoluteFilePath();
+  if (target == path_) {
+    QFileInfo info(path_);
+    if (!info.exists() || info.size() != disk_size_ || info.lastModified() != disk_modified_) {
+      if (QMessageBox::warning(this, tr("File Changed on Disk"), tr("The original file changed outside DeepHex. Replace it with your edited bytes?"), QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Save)
+        return false;
+    }
+  }
+  QSaveFile file(target);
+  if (!file.open(QIODevice::WriteOnly)) {
+    QMessageBox::warning(this, tr("Cannot Save File"), file.errorString());
+    return false;
+  }
+  const auto& data = memory_view_->getData();
+  qint64 written = 0;
+  while (written < data.size()) {
+    qint64 count = file.write(reinterpret_cast<const char*>(data.constData()) + written, qMin<qint64>(1024 * 1024, data.size() - written));
+    if (count <= 0) {
+      QMessageBox::warning(this, tr("Cannot Save File"), file.errorString());
+      return false;
+    }
+    written += count;
+  }
+  if (!file.commit()) {
+    QMessageBox::warning(this, tr("Cannot Save File"), file.errorString());
+    return false;
+  }
+  path_ = target;
+  disk_modified_ = QFileInfo(path_).lastModified();
+  disk_size_ = data.size();
+  memory_view_->markSaved();
+  updateDocument();
+  rememberFile(path_);
+  statusBar()->showMessage(tr("Saved %1").arg(QFileInfo(path_).fileName()), 3000);
+  return true;
+}
 
-    QProgressDialog progress(tr("Loading file..."), tr("Cancel"), 0, fileSize,
-                             this);
-    progress.setWindowModality(Qt::ApplicationModal);
-    progress.setMinimumDuration(0);
+bool MainWindow::save(bool saveAs)
+{
+  if (!document_open_) return false;
+  QString file = path_;
+  if (saveAs || file.isEmpty()) file = QFileDialog::getSaveFileName(this, tr("Save Binary File"), path_);
+  return !file.isEmpty() && saveFile(file);
+}
 
-    qint64 bytesRead = 0;
-    QElapsedTimer timer;
-    timer.start();
+bool MainWindow::maybeSave()
+{
+  if (!memory_view_->isModified()) return true;
+  const auto answer = QMessageBox::warning(this, tr("Unsaved Changes"), tr("Save changes to %1?").arg(QFileInfo(path_).fileName()), QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+  if (answer == QMessageBox::Cancel) return false;
+  return answer != QMessageBox::Save || save();
+}
 
-    while (!file.atEnd()) {
-      if (progress.wasCanceled()) {
-        file.close();
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+  if (!maybeSave()) { event->ignore(); return; }
+  QSettings settings;
+  settings.setValue("windowGeometry", saveGeometry());
+  settings.setValue("splitterState", splitter_->saveState());
+  event->accept();
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* event)
+{
+  if (event->mimeData()->hasUrls() && event->mimeData()->urls().size() == 1 && event->mimeData()->urls().first().isLocalFile()) event->acceptProposedAction();
+}
+void MainWindow::dropEvent(QDropEvent* event)
+{
+  const auto urls = event->mimeData()->urls();
+  if (urls.size() == 1 && urls.first().isLocalFile() && openFile(urls.first().toLocalFile())) event->acceptProposedAction();
+}
+
+void MainWindow::showFind()
+{
+  find_bar_->show();
+  search_input_->setFocus();
+  search_input_->selectAll();
+}
+
+void MainWindow::find(bool backwards)
+{
+  find_bar_->show();
+  QByteArray needle;
+  if (search_mode_->currentIndex() == 1) needle = search_input_->text().toUtf8();
+  else {
+    QByteArray digits;
+    for (QChar ch : search_input_->text()) {
+      if (ch.isSpace()) continue;
+      if (!((ch >= '0' && ch <= '9') || (ch.toLower() >= 'a' && ch.toLower() <= 'f'))) {
+        search_status_->setText(tr("Use hex pairs (00–FF)"));
         return;
       }
-      QByteArray chunk = file.read(chunkSize);
-      fileData.append(chunk);
-      for (char byte : chunk) {
-        data.append(static_cast<quint8>(byte));
-      }
-      bytesRead += chunk.size();
-
-      // Calculate percent and ETA
-      double percent = (fileSize > 0) ? (100.0 * bytesRead / fileSize) : 100.0;
-      qint64 elapsedMs = timer.elapsed();
-      QString etaStr;
-      if (bytesRead > 0 && bytesRead < fileSize) {
-        double bytesPerMs = double(bytesRead) / elapsedMs;
-        qint64 msRemaining =
-            (fileSize - bytesRead) / (bytesPerMs > 0 ? bytesPerMs : 1);
-        int seconds = int(msRemaining / 1000) % 60;
-        int minutes = int(msRemaining / 60000);
-        etaStr = QString("ETA: %1m %2s")
-                     .arg(minutes)
-                     .arg(seconds, 2, 10, QChar('0'));
-      }
-      else {
-        etaStr = "ETA: --";
-      }
-      progress.setLabelText(tr("Loading file... %1%\n%2")
-                                .arg(QString::number(percent, 'f', 1))
-                                .arg(etaStr));
-
-      progress.setValue(bytesRead);
-      QCoreApplication::processEvents();
+      digits.append(ch.toLatin1());
     }
-    progress.setValue(fileSize);
-
-    memory_view_->setData(data);
-
-    std::unique_ptr<StandardMap> standard_map = nullptr;
-    if (MachoMap::isSupported(data)) {
-      printf("Mach-O\n");
-      standard_map = std::make_unique<MachoMap>();
-    }
-    else if (ElfMap::isSupported(data)) {
-      printf("ELF\n");
-      standard_map = std::make_unique<ElfMap>();
-    }
-    else {
-      standard_map = std::make_unique<StandardMap>();
-    }
-
-    if (!standard_map) {
-      standard_map = std::make_unique<StandardMap>();
-    }
-
-    heat_map_->updateMap(data, standard_map.get());
-    file.close();
+    if (digits.size() % 2) { search_status_->setText(tr("Incomplete hex pair")); return; }
+    needle = QByteArray::fromHex(digits);
   }
+  if (needle.isEmpty()) { search_status_->setText(tr("Enter a pattern")); return; }
+  const auto& data = memory_view_->getData();
+  const QByteArray bytes = QByteArray::fromRawData(reinterpret_cast<const char*>(data.constData()), data.size());
+  const int cursor = memory_view_->selectionStart();
+  const bool repeat = search_input_->text() == last_query_ &&
+      search_mode_->currentIndex() == last_search_mode_ && cursor == last_match_;
+  qsizetype found = -1;
+  bool wrapped = false;
+  if (backwards) {
+    const int from = cursor - (repeat ? 1 : 0);
+    if (from >= 0) found = bytes.lastIndexOf(needle, from);
+    if (found < 0) { found = bytes.lastIndexOf(needle); wrapped = found >= 0; }
+  } else {
+    found = bytes.indexOf(needle, qMax(0, cursor + (repeat ? 1 : 0)));
+    if (found < 0) { found = bytes.indexOf(needle); wrapped = found >= 0; }
+  }
+  if (found < 0) { search_status_->setText(tr("No match")); return; }
+  memory_view_->selectRange(int(found), int(needle.size()));
+  last_query_ = search_input_->text();
+  last_search_mode_ = search_mode_->currentIndex();
+  last_match_ = int(found);
+  search_status_->setText(wrapped ? tr("Wrapped · %1").arg(offsetText(found)) : offsetText(found));
+}
+
+void MainWindow::goToOffset()
+{
+  bool ok;
+  const QString input = QInputDialog::getText(this, tr("Go to Offset"), tr("Decimal offset, or hexadecimal prefixed with 0x:"), QLineEdit::Normal, offsetText(qMax(0, memory_view_->selectionStart())), &ok).trimmed();
+  if (!ok) return;
+  bool parsed;
+  const quint64 offset = input.toULongLong(&parsed, input.startsWith("0x", Qt::CaseInsensitive) ? 16 : 10);
+  if (!parsed || offset >= quint64(memory_view_->getData().size())) {
+    QMessageBox::warning(this, tr("Invalid Offset"), tr("Enter an offset within the file."));
+    return;
+  }
+  memory_view_->moveToPos(offset, true);
+  memory_view_->setFocus();
+}
+
+void MainWindow::updateDocument()
+{
+  const bool dirty = memory_view_->isModified();
+  setWindowModified(dirty);
+  setWindowFilePath(path_);
+  setWindowTitle(document_open_ ? QFileInfo(path_).fileName() + "[*] — DeepHex" : "DeepHex");
+  file_label_->setText(document_open_ ? QFileInfo(path_).fileName() : tr("Open a file to explore"));
+  file_label_->setToolTip(path_);
+  if (document_open_) detail_label_->setText(tr("%1  ·  %2 bytes  ·  %3").arg(fileKind(memory_view_->getData()), QLocale().toString(memory_view_->getData().size()), dirty ? tr("Unsaved changes") : tr("Saved")));
+  save_action_->setEnabled(document_open_ && dirty);
+  save_as_action_->setEnabled(document_open_);
+  next_action_->setEnabled(document_open_);
+  previous_action_->setEnabled(document_open_);
+}
+
+void MainWindow::updateSelection()
+{
+  const int start = memory_view_->selectionStart();
+  const int length = memory_view_->selectionLength();
+  if (start < 0 || !length) {
+    selection_label_->setText(document_open_ ? tr("Empty file · 0 bytes") : tr("Ready"));
+    inspector_->setText(tr("Select a byte to inspect its values.<br><br>Hex: type 0–9 / A–F<br>ASCII: click the text column<br>Tab: switch editing pane<br>Shift + arrows: extend selection"));
+    return;
+  }
+  selection_label_->setText(tr("Offset %1  ·  %2 byte%3 selected").arg(offsetText(start)).arg(QLocale().toString(length), length == 1 ? "" : "s"));
+  const auto& data = memory_view_->getData();
+  const int available = int(data.size()) - start;
+  const bool little = byte_order_->currentIndex() == 0;
+  auto readValue = [&](int width) {
+    quint64 value = 0;
+    for (int i = 0; i < width; ++i) value |= quint64(data[start + i]) << ((little ? i : width - i - 1) * 8);
+    return value;
+  };
+  QString html = "<table cellspacing='5'>";
+  auto row = [&](const QString& label, const QString& value) {
+    html += "<tr><td>" + label.toHtmlEscaped() + "</td><td>" + value.toHtmlEscaped() + "</td></tr>";
+  };
+  row(tr("Offset"), offsetText(start));
+  row(tr("Binary"), QString("%1").arg(data[start], 8, 2, QChar('0')));
+  for (int width : {1, 2, 4, 8}) {
+    const QString suffix = QString::number(width * 8);
+    if (available < width) { row("UInt" + suffix, "—"); row("Int" + suffix, "—"); continue; }
+    quint64 value = readValue(width);
+    qint64 signedValue;
+    if (width == 8) std::memcpy(&signedValue, &value, sizeof(value));
+    else signedValue = (value & (quint64(1) << (width * 8 - 1))) ? qint64(value) - (qint64(1) << (width * 8)) : qint64(value);
+    row("UInt" + suffix, QString::number(value));
+    row("Int" + suffix, QString::number(signedValue));
+  }
+  if (available >= 4) {
+    quint32 bits = quint32(readValue(4));
+    float value;
+    std::memcpy(&value, &bits, sizeof(value));
+    row("Float32", QString::number(value, 'g', 9));
+  } else row("Float32", "—");
+  if (available >= 8) {
+    quint64 bits = readValue(8);
+    double value;
+    std::memcpy(&value, &bits, sizeof(value));
+    row("Float64", QString::number(value, 'g', 17));
+  } else row("Float64", "—");
+  html += "</table>";
+  inspector_->setText(html);
+}
+
+void MainWindow::updateOverview()
+{
+  const auto& data = memory_view_->getData();
+  std::unique_ptr<StandardMap> map;
+  if (MachoMap::isSupported(data)) map = std::make_unique<MachoMap>();
+  else if (ElfMap::isSupported(data)) map = std::make_unique<ElfMap>();
+  else map = std::make_unique<StandardMap>();
+  heat_map_->updateMap(data, map.get());
+  QStringList legend;
+  QSet<QPair<QString, QRgb>> seen;
+  for (const auto& region : heat_map_->regions()) {
+    const auto key = qMakePair(region.legend_label, region.color.rgba());
+    if (seen.contains(key)) continue;
+    seen.insert(key);
+    const QString color = region.color.name();
+    legend.append(QString("<span style='color:%1'>■</span>&nbsp;%2")
+                      .arg(color, region.legend_label.toHtmlEscaped()));
+  }
+  if (!legend.isEmpty()) {
+    legend.append(QString("<span style='color:%1'>▣</span>&nbsp;%2")
+                      .arg(palette().color(QPalette::WindowText).name(),
+                           tr("Visible bytes").toHtmlEscaped()));
+  }
+  overview_legend_->setText(legend.join(" &nbsp;&nbsp; "));
+  overview_legend_->setVisible(!legend.isEmpty());
+  regions_->clear();
+  for (const auto& region : heat_map_->regions()) {
+    auto* item = new QTreeWidgetItem(regions_, {region.label, offsetText(region.start)});
+    item->setData(0, Qt::UserRole, QVariant::fromValue<qulonglong>(region.start));
+    item->setToolTip(0, tr("%1 bytes · %2–%3").arg(region.end - region.start).arg(offsetText(region.start), offsetText(region.end - 1)));
+  }
+  updateDocument();
+}
+
+void MainWindow::rememberFile(const QString& path)
+{
+  QSettings settings;
+  QStringList recent = settings.value("recentFiles").toStringList();
+  recent.removeAll(path);
+  recent.prepend(path);
+  while (recent.size() > 8) recent.removeLast();
+  settings.setValue("recentFiles", recent);
+  updateRecentFiles();
+}
+void MainWindow::updateRecentFiles()
+{
+  recent_menu_->clear();
+  const QStringList recent = QSettings().value("recentFiles").toStringList();
+  for (const QString& path : recent) {
+    auto* action = recent_menu_->addAction(QFileInfo(path).fileName());
+    action->setToolTip(path);
+    connect(action, &QAction::triggered, this, [this, path] { openFile(path); });
+  }
+  recent_menu_->setEnabled(!recent.isEmpty());
 }

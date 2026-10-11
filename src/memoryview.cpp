@@ -1,42 +1,125 @@
 #include "memoryview.h"
-#include <QtCore/qminmax.h>
-#include <QtCore/qnamespace.h>
-#include <QtGui/qcolor.h>
-#include <QtGui/qguiapplication.h>
-#include <QtWidgets/qapplication.h>
-#include <sys/types.h>
+
 #include <QApplication>
-#include <QChar>
 #include <QClipboard>
+#include <QFontDatabase>
 #include <QFontMetrics>
 #include <QKeyEvent>
 #include <QMenu>
+#include <QMessageBox>
+#include <QMouseEvent>
 #include <QPainter>
-#include <cstdint>
+#include <QResizeEvent>
+#include <QScrollBar>
+#include <QUndoCommand>
+#include <algorithm>
+#include <utility>
+
 #include "heatmap.h"
 
-MemoryView::MemoryView(QWidget* parent, HeatMap* heat_map) : QWidget(parent)
+namespace {
+constexpr char kHexDigits[] = "0123456789ABCDEF";
+
+int hexDigit(QChar character)
 {
-  selection_start_ = -1;
-  selection_end_ = -1;
-  selecting_ = false;
-  first_visible_row_ = 0;
-  heat_map_ = heat_map;
-  edit_nibble_ = 0;
-
-  setFont(QFont("Courier New", 12));
-  const QFontMetrics font_metrics(font());
-  font_width_ = font_metrics.horizontalAdvance(' ');
-  font_height_ = font_metrics.height();
-
-  setFocusPolicy(Qt::StrongFocus);  // For keyboard input
+  const ushort value = character.unicode();
+  if (value >= '0' && value <= '9')
+    return value - '0';
+  if (value >= 'a' && value <= 'f')
+    return value - 'a' + 10;
+  if (value >= 'A' && value <= 'F')
+    return value - 'A' + 10;
+  return -1;
 }
 
-void MemoryView::setData(const QVector<quint8>& data)
+QColor blend(const QColor& first, const QColor& second, int percent)
 {
-  memory_data_ = data;
-  moveToPos(0);
-  update();
+  return QColor((first.red() * (100 - percent) + second.red() * percent) / 100,
+                (first.green() * (100 - percent) + second.green() * percent) / 100,
+                (first.blue() * (100 - percent) + second.blue() * percent) / 100);
+}
+}  // namespace
+
+class ByteEditCommand : public QUndoCommand {
+ public:
+  ByteEditCommand(MemoryView* view, int start, QVector<quint8> before,
+                  QVector<quint8> after, const QString& description,
+                  quint64 token)
+      : QUndoCommand(description), view_(view), start_(start),
+        before_(std::move(before)), after_(std::move(after)), token_(token)
+  {
+  }
+
+  void undo() override { view_->applyBytes(start_, before_); }
+  void redo() override { view_->applyBytes(start_, after_); }
+  int id() const override { return token_ ? 1 : -1; }
+
+  bool mergeWith(const QUndoCommand* command) override
+  {
+    const auto* other = dynamic_cast<const ByteEditCommand*>(command);
+    if (!other || other->view_ != view_ || !token_ || token_ != other->token_ ||
+        start_ != other->start_ || before_.size() != other->before_.size())
+      return false;
+    after_ = other->after_;
+    setObsolete(before_ == after_);
+    return true;
+  }
+
+ private:
+  MemoryView* view_;
+  int start_;
+  QVector<quint8> before_;
+  QVector<quint8> after_;
+  quint64 token_;
+};
+
+MemoryView::MemoryView(QWidget* parent, HeatMap* heat_map)
+    : QAbstractScrollArea(parent), heat_map_(heat_map), undo_stack_(this)
+{
+  QFont fixed_font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+  fixed_font.setPointSize(13);
+  setFont(fixed_font);
+  setFocusPolicy(Qt::StrongFocus);
+  setFrameShape(QFrame::StyledPanel);
+  viewport()->setMouseTracking(true);
+  viewport()->setAutoFillBackground(false);
+  setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+  connect(&undo_stack_, &QUndoStack::cleanChanged, this, [this](bool clean) {
+    emit modifiedChanged(!clean);
+  });
+  connect(&undo_stack_, &QUndoStack::indexChanged, this, [this](int) {
+    if (!pushing_command_)
+      resetNibble();
+  });
+  drag_timer_.setInterval(40);
+  connect(&drag_timer_, &QTimer::timeout, this, &MemoryView::updateDrag);
+  updateMetrics();
+}
+
+MemoryView::~MemoryView()
+{
+  // QUndoStack::clear emits while member destruction precedes QObject disconnection.
+  undo_stack_.disconnect(this);
+}
+
+void MemoryView::setData(QVector<quint8> data)
+{
+  stopDragging();
+  resetNibble();
+  memory_data_ = std::move(data);
+  undo_stack_.clear();
+  undo_stack_.setClean();
+  anchor_ = cursor_ = memory_data_.isEmpty() ? -1 : 0;
+  pane_ = Pane::Hex;
+  updateScrollBars();
+  verticalScrollBar()->setValue(0);
+  horizontalScrollBar()->setValue(0);
+  updateOverview();
+  viewport()->update();
+  emit selectionChanged();
+  emit dataChanged();
 }
 
 const QVector<quint8>& MemoryView::getData() const
@@ -44,371 +127,689 @@ const QVector<quint8>& MemoryView::getData() const
   return memory_data_;
 }
 
-void MemoryView::setStatusBar(QStatusBar* status_bar)
+int MemoryView::selectionStart() const
 {
-  status_bar_ = status_bar;
+  return cursor_ < 0 || anchor_ < 0 ? -1 : qMin(cursor_, anchor_);
+}
+
+int MemoryView::selectionLength() const
+{
+  return selectionStart() < 0 ? 0 : qMax(cursor_, anchor_) - selectionStart() + 1;
+}
+
+void MemoryView::selectRange(int start, int length)
+{
+  resetNibble();
+  const int old_anchor = anchor_;
+  const int old_cursor = cursor_;
+  if (memory_data_.isEmpty() || length <= 0) {
+    anchor_ = cursor_ = -1;
+  }
+  else {
+    start = qBound(0, start, int(memory_data_.size()) - 1);
+    anchor_ = start;
+    cursor_ = start + qMin(length, int(memory_data_.size()) - start) - 1;
+    ensureCursorVisible();
+  }
+  viewport()->update();
+  if (old_anchor != anchor_ || old_cursor != cursor_)
+    emit selectionChanged();
+}
+
+QUndoStack* MemoryView::undoStack()
+{
+  return &undo_stack_;
+}
+
+bool MemoryView::isModified() const
+{
+  return !undo_stack_.isClean();
+}
+
+void MemoryView::markSaved()
+{
+  resetNibble();
+  undo_stack_.setClean();
+}
+
+void MemoryView::moveToPos(uint64_t pos, bool select_byte)
+{
+  if (memory_data_.isEmpty())
+    return;
+  const int index = int(std::min(pos, uint64_t(memory_data_.size() - 1)));
+  if (select_byte) {
+    resetNibble();
+    setCursor(index, false);
+  }
+  verticalScrollBar()->setValue(index / kBytesPerRow);
+  updateOverview();
+}
+
+QSize MemoryView::sizeHint() const
+{
+  return QSize(content_width_ + 24, header_height_ + row_height_ * 24);
+}
+
+int MemoryView::hexCellX(int column) const
+{
+  return hex_start_ + column * char_width_ * 3 + (column / 4) * char_width_;
+}
+
+int MemoryView::visibleRows() const
+{
+  return qMax(1, (viewport()->height() - header_height_) / row_height_);
+}
+
+void MemoryView::updateMetrics()
+{
+  const QFontMetrics metrics(font());
+  char_width_ = qMax(1, metrics.horizontalAdvance(QLatin1Char('0')));
+  row_height_ = qMax(1, metrics.height() + 6);
+  header_height_ = row_height_ + 8;
+  hex_start_ = char_width_ * 11;
+  ascii_start_ = hexCellX(kBytesPerRow - 1) + char_width_ * 4;
+  content_width_ = ascii_start_ + kBytesPerRow * char_width_ + char_width_ * 2;
+  updateScrollBars();
+  viewport()->update();
+}
+
+void MemoryView::updateScrollBars()
+{
+  const int rows = memory_data_.isEmpty()
+                       ? 0 : (int(memory_data_.size()) - 1) / kBytesPerRow + 1;
+  verticalScrollBar()->setSingleStep(1);
+  verticalScrollBar()->setPageStep(visibleRows());
+  verticalScrollBar()->setRange(0, qMax(0, rows - visibleRows()));
+  horizontalScrollBar()->setSingleStep(char_width_ * 3);
+  horizontalScrollBar()->setPageStep(qMax(1, viewport()->width()));
+  horizontalScrollBar()->setRange(0, qMax(0, content_width_ - viewport()->width()));
+  updateOverview();
+}
+
+void MemoryView::updateOverview()
+{
+  if (!heat_map_)
+    return;
+  const uint64_t start = uint64_t(verticalScrollBar()->value()) * kBytesPerRow;
+  const int painted_rows = qMax(0, (viewport()->height() - header_height_ +
+                                   row_height_ - 1) / row_height_);
+  const uint64_t end = std::min(uint64_t(memory_data_.size()),
+                              start + uint64_t(painted_rows) * kBytesPerRow);
+  heat_map_->updateViewRect(std::min(start, end), end);
+}
+
+void MemoryView::scrollContentsBy(int dx, int dy)
+{
+  Q_UNUSED(dx);
+  Q_UNUSED(dy);
+  viewport()->update();
+  updateOverview();
+}
+
+void MemoryView::resizeEvent(QResizeEvent* event)
+{
+  QAbstractScrollArea::resizeEvent(event);
+  updateScrollBars();
+}
+
+void MemoryView::changeEvent(QEvent* event)
+{
+  QAbstractScrollArea::changeEvent(event);
+  if (event->type() == QEvent::FontChange ||
+      event->type() == QEvent::ApplicationFontChange)
+    updateMetrics();
+  else if (event->type() == QEvent::PaletteChange)
+    viewport()->update();
+}
+
+void MemoryView::focusInEvent(QFocusEvent* event)
+{
+  QAbstractScrollArea::focusInEvent(event);
+  viewport()->update();
+}
+
+void MemoryView::focusOutEvent(QFocusEvent* event)
+{
+  stopDragging();
+  resetNibble();
+  QAbstractScrollArea::focusOutEvent(event);
+  viewport()->update();
+}
+
+bool MemoryView::focusNextPrevChild(bool next)
+{
+  Q_UNUSED(next);
+  // Tab is an editor command, not focus traversal between the scrollbars.
+  return false;
 }
 
 void MemoryView::paintEvent(QPaintEvent* event)
 {
   Q_UNUSED(event);
-  QPainter painter(this);
-  painter.setRenderHint(QPainter::TextAntialiasing);
-  const int y_offset = font_height_;
+  QPainter painter(viewport());
+  painter.setFont(font());
+  const QPalette colors = palette();
+  const QColor base = colors.color(QPalette::Base);
+  const QColor text = colors.color(QPalette::Text);
+  const QColor muted = blend(text, base, 48);
+  const QColor printable = blend(text, colors.color(QPalette::Link), 32);
+  const QColor selection = hasFocus() ? colors.color(QPalette::Highlight)
+                                     : blend(colors.color(QPalette::Highlight), base, 45);
+  const QColor selected_text = colors.color(QPalette::HighlightedText);
+  painter.fillRect(viewport()->rect(), base);
 
-  // Draw background
-  auto palette_font_color = this->palette().color(QWidget::foregroundRole());
-  painter.setPen(palette_font_color);
-  auto select_color = this->palette().color(QPalette::Highlight);
-
-  // Calculate a stronger color for ascii characters
-  QColor ascii_color = QColor(0xeb9b9b);
-  QColor header_color = palette_font_color.darker(150);
-  QColor addr_color = palette_font_color.darker(150);
-  QColor zero_color = palette_font_color.darker(200);
-
-  // Draw header (aligned per cell)
-  painter.setPen(header_color);
-  for (int col = 0; col < BYTES_PER_LINE; ++col) {
-    QString header = QString("%1").arg(col, 2, 16, QChar('0')).toUpper();
-    int x = ADDRESS_WIDTH + col * CELL_WIDTH;
-    painter.drawText(x, y_offset, CELL_WIDTH, font_height_, Qt::AlignCenter,
-                     header);
+  if (memory_data_.isEmpty()) {
+    painter.setPen(muted);
+    painter.drawText(viewport()->rect(), Qt::AlignCenter,
+                     tr("No bytes to display\nOpen a file to begin editing."));
+    return;
   }
 
-  // Draw ASCII header
-  int ascii_x = ADDRESS_WIDTH + BYTES_PER_LINE * CELL_WIDTH + 20;
-  int ascii_area_width = font_width_ * BYTES_PER_LINE;
-  painter.drawText(ascii_x, y_offset, ascii_area_width, font_height_,
-                   Qt::AlignLeft, "ASCII");
-
-  // Draw memory content
-  int num_rows = (memory_data_.size() + BYTES_PER_LINE - 1) / BYTES_PER_LINE;
-  int ascii_width = font_width_;
-
-  int num_rows_left = num_rows - first_visible_row_;
-  int num_rows_to_show = qMin(num_rows_left, numVisibleRows());
-
-  for (int row = 0; row < num_rows_to_show; row++) {
-    int y = y_offset + (row + 1) * font_height_;
-
-    // Draw address
-    painter.setPen(header_color);
-    uint64_t addr = (first_visible_row_ + row) * BYTES_PER_LINE;
-    QString addr_str = QString("%1").arg(addr, 8, 16, QChar('0')).toUpper();
-    painter.drawText(0, y, ADDRESS_WIDTH, font_height_,
-                     Qt::AlignRight | Qt::AlignVCenter, addr_str);
-
-    for (int col = 0; col < BYTES_PER_LINE; ++col) {
-      int i = (first_visible_row_ + row) * BYTES_PER_LINE + col;
-      if (i >= memory_data_.size())
+  const int horizontal = horizontalScrollBar()->value();
+  painter.translate(-horizontal, 0);
+  const int first_row = verticalScrollBar()->value();
+  const int selected_start = selectionStart();
+  const int selected_end = selected_start + selectionLength();
+  const int row_count = (int(memory_data_.size()) - 1) / kBytesPerRow + 1;
+  const int visible = qMax(0, (viewport()->height() - header_height_ +
+                             row_height_ - 1) / row_height_);
+  painter.save();
+  painter.setClipRect(horizontal, header_height_, viewport()->width(),
+                      qMax(0, viewport()->height() - header_height_));
+  for (int row = first_row; row < qMin(row_count, first_row + visible); ++row) {
+    const int y = header_height_ + (row - first_row) * row_height_;
+    if (row & 1)
+      painter.fillRect(horizontal, y, viewport()->width(), row_height_,
+                       blend(base, text, 3));
+    painter.setPen(muted);
+    painter.drawText(char_width_, y, char_width_ * 8, row_height_,
+                     Qt::AlignRight | Qt::AlignVCenter,
+                     QStringLiteral("%1").arg(qulonglong(row) * kBytesPerRow,
+                                              8, 16, QLatin1Char('0')).toUpper());
+    for (int column = 0; column < kBytesPerRow; ++column) {
+      const int index = row * kBytesPerRow + column;
+      if (index >= memory_data_.size())
         break;
-
-      int x = ADDRESS_WIDTH + col * CELL_WIDTH;
-      int ascii_char_x = ascii_x + ascii_width * col;
-
-      // Highlight selection in hex view
-      if (selection_start_ != -1 && selection_end_ != -1) {
-        int sel_min = qMin(selection_start_, selection_end_);
-        int sel_max = qMax(selection_start_, selection_end_);
-        if (i >= sel_min && i <= sel_max) {
-          painter.fillRect(x, y, CELL_WIDTH, font_height_, select_color);
-          painter.fillRect(ascii_char_x, y, ascii_width, font_height_,
-                           select_color);
+      const quint8 byte = memory_data_.at(index);
+      const bool is_printable = byte >= 32 && byte <= 126;
+      const bool selected = index >= selected_start && index < selected_end;
+      const QRect hex_rect(hexCellX(column), y, char_width_ * 3, row_height_);
+      const QRect ascii_rect(ascii_start_ + column * char_width_, y,
+                             char_width_, row_height_);
+      if (selected) {
+        painter.fillRect(hex_rect, selection);
+        painter.fillRect(ascii_rect, selection);
+      }
+      painter.setPen(selected ? selected_text
+                              : byte == 0 ? muted : is_printable ? printable : text);
+      const QChar digits[] = {QLatin1Char(kHexDigits[byte >> 4]),
+                              QLatin1Char(kHexDigits[byte & 15])};
+      painter.drawText(hex_rect.adjusted(char_width_ / 2, 0, 0, 0),
+                       Qt::AlignLeft | Qt::AlignVCenter, QString(digits, 2));
+      painter.drawText(ascii_rect, Qt::AlignCenter,
+                       QString(is_printable ? QChar(byte) : QLatin1Char('.')));
+      if (index == cursor_) {
+        painter.setPen(hasFocus() ? selected_text : muted);
+        painter.drawRect(hex_rect.adjusted(0, 1, -1, -2));
+        painter.drawRect(ascii_rect.adjusted(0, 1, -1, -2));
+        if (hasFocus()) {
+          const int caret_x = pane_ == Pane::Hex
+                                  ? hex_rect.x() + char_width_ / 2 + nibble_ * char_width_
+                                  : ascii_rect.x();
+          painter.fillRect(caret_x, y + row_height_ - 4, char_width_, 2,
+                           selected ? selected_text : text);
         }
       }
-
-      // ASCII color logic
-      char ch = static_cast<char>(memory_data_[i]);
-      if (ch == 0) {
-        painter.setPen(zero_color);  // Highlight zero bytes
-      }
-      else if (ch >= 32 && ch <= 126) {
-        painter.setPen(ascii_color);  // Highlight printable characters
-      }
-      else {
-        painter.setPen(palette_font_color);
-      }
-
-      // Draw byte value
-      QString byte_str =
-          QString("%1").arg(memory_data_[i], 2, 16, QChar('0')).toUpper();
-      painter.drawText(x, y, CELL_WIDTH, font_height_, Qt::AlignCenter,
-                       byte_str);
-
-      // Draw ASCII character
-      QChar ascii_char = (ch >= 32 && ch <= 126) ? QChar(ch) : QChar('.');
-      painter.drawText(ascii_char_x, y, ascii_width, font_height_,
-                       Qt::AlignCenter, ascii_char);
     }
   }
+  painter.restore();
 
-  // Add a scrollbar if needed
-  if (num_rows_to_show < num_rows) {
-    int scrollbar_height =
-        ((float)numVisibleRows() / (float)num_rows) * height();
-    if (scrollbar_height < 20) {
-      scrollbar_height = 20;  // Minimum height for scrollbar
-    }
-
-    int max_scroll_y = height() - scrollbar_height;
-    float scroll_ratio =
-        (float)first_visible_row_ / (float)(num_rows - numVisibleRows());
-    scroll_ratio = qBound(0.0f, scroll_ratio, 1.0f);
-    int scrollbar_y = scroll_ratio * max_scroll_y;
-
-    painter.fillRect(width() - 20, scrollbar_y, 10, scrollbar_height,
-                     QColor(200, 200, 200));
+  painter.fillRect(horizontal, 0, viewport()->width(), header_height_,
+                   colors.color(QPalette::Window));
+  painter.setPen(muted);
+  painter.drawText(char_width_, 0, char_width_ * 8, header_height_,
+                   Qt::AlignRight | Qt::AlignVCenter, tr("OFFSET"));
+  for (int column = 0; column < kBytesPerRow; ++column) {
+    painter.drawText(hexCellX(column), 0, char_width_ * 3, header_height_,
+                     Qt::AlignCenter,
+                     QStringLiteral("%1").arg(column, 2, 16, QLatin1Char('0')).toUpper());
   }
-
-  // Update heatmap if available
-  if (heat_map_) {
-    heat_map_->updateViewRect(
-        first_visible_row_ * BYTES_PER_LINE,
-        (first_visible_row_ + num_rows_to_show) * BYTES_PER_LINE);
-  }
+  painter.drawText(ascii_start_, 0, char_width_ * kBytesPerRow, header_height_,
+                   Qt::AlignLeft | Qt::AlignVCenter, tr("ASCII"));
+  painter.setPen(blend(text, base, 80));
+  painter.drawLine(horizontal, header_height_ - 1,
+                   horizontal + viewport()->width(), header_height_ - 1);
 }
 
-QSize MemoryView::sizeHint() const
+int MemoryView::indexAt(const QPoint& position, Pane* pane, bool clamp) const
 {
-  int num_rows = (memory_data_.size() + BYTES_PER_LINE - 1) / BYTES_PER_LINE;
-  const QFontMetrics font_metrics(font());
-  int line_height = font_metrics.height();
-  int ascii_area_width = font_width_ * BYTES_PER_LINE;
-  int total_height = (num_rows + 1) * line_height;  // +1 for header
-
-  // Add space for ASCII area
-  return QSize(
-      ADDRESS_WIDTH + BYTES_PER_LINE * CELL_WIDTH + 20 + ascii_area_width,
-      total_height);
-}
-
-int MemoryView::posToIndex(const QPoint& pos) const
-{
-  const QFontMetrics font_metrics(font());
-  int line_height = font_metrics.height();
-  int y_offset = line_height;
-  int row = (pos.y() - y_offset) / line_height - 1;
-  if (row < 0)
+  if (memory_data_.isEmpty() || (!clamp && position.y() < header_height_))
     return -1;
-
-  // Hex panel column
-  int col = (pos.x() - ADDRESS_WIDTH) / CELL_WIDTH;
-
-  // ASCII panel start x and width per char
-  int ascii_x = ADDRESS_WIDTH + BYTES_PER_LINE * CELL_WIDTH + 20;
-  int ascii_width = font_width_;
-
-  // Check if click is in hex panel
-  if (col >= 0 && col < BYTES_PER_LINE) {
-    int idx = (first_visible_row_ + row) * BYTES_PER_LINE + col;
-    if (idx < 0 || idx >= memory_data_.size())
-      return -1;
-    return idx;
-  }
-
-  // Check if click is in ASCII panel
-  if (pos.x() >= ascii_x && pos.x() < ascii_x + ascii_width * BYTES_PER_LINE) {
-    int ascii_col = (pos.x() - ascii_x) / ascii_width;
-    if (ascii_col >= 0 && ascii_col < BYTES_PER_LINE) {
-      int idx = (first_visible_row_ + row) * BYTES_PER_LINE + ascii_col;
-      if (idx < 0 || idx >= memory_data_.size())
-        return -1;
-      return idx;
+  const int x = position.x() + horizontalScrollBar()->value();
+  int column = -1;
+  Pane target = *pane;
+  if (clamp) {
+    if (target == Pane::Ascii)
+      column = qBound(0, (x - ascii_start_) / char_width_, kBytesPerRow - 1);
+    else {
+      column = 0;
+      for (int candidate = 1; candidate < kBytesPerRow; ++candidate) {
+        if (x >= hexCellX(candidate))
+          column = candidate;
+      }
     }
   }
+  else if (x >= ascii_start_ && x < ascii_start_ + kBytesPerRow * char_width_) {
+    target = Pane::Ascii;
+    column = (x - ascii_start_) / char_width_;
+  }
+  else {
+    for (int candidate = 0; candidate < kBytesPerRow; ++candidate) {
+      if (x >= hexCellX(candidate) &&
+          x < hexCellX(candidate) + char_width_ * 3) {
+        target = Pane::Hex;
+        column = candidate;
+        break;
+      }
+    }
+  }
+  if (column < 0)
+    return -1;
+  const int local_row = qMax(0, (position.y() - header_height_) / row_height_);
+  const qint64 index = (qint64(verticalScrollBar()->value()) + local_row) *
+                          kBytesPerRow + column;
+  if (!clamp && index >= memory_data_.size())
+    return -1;
+  *pane = target;
+  return int(qBound(qint64(0), index, qint64(memory_data_.size() - 1)));
+}
 
-  return -1;
+void MemoryView::resetNibble()
+{
+  nibble_ = 0;
+  ++edit_token_;
+  viewport()->update();
+}
+
+void MemoryView::setCursor(int index, bool extend)
+{
+  if (memory_data_.isEmpty())
+    return;
+  index = qBound(0, index, int(memory_data_.size()) - 1);
+  const int old_anchor = anchor_;
+  const int old_cursor = cursor_;
+  if (!extend || anchor_ < 0)
+    anchor_ = index;
+  cursor_ = index;
+  ensureCursorVisible();
+  viewport()->update();
+  if (old_anchor != anchor_ || old_cursor != cursor_)
+    emit selectionChanged();
+}
+
+void MemoryView::ensureCursorVisible()
+{
+  if (cursor_ < 0)
+    return;
+  const int row = cursor_ / kBytesPerRow;
+  const int first = verticalScrollBar()->value();
+  if (row < first)
+    verticalScrollBar()->setValue(row);
+  else if (row >= first + visibleRows())
+    verticalScrollBar()->setValue(row - visibleRows() + 1);
+  const int column = cursor_ % kBytesPerRow;
+  const int x = pane_ == Pane::Hex ? hexCellX(column)
+                                  : ascii_start_ + column * char_width_;
+  const int width = pane_ == Pane::Hex ? char_width_ * 3 : char_width_;
+  const int left = horizontalScrollBar()->value();
+  if (x < left)
+    horizontalScrollBar()->setValue(x);
+  else if (x + width > left + viewport()->width())
+    horizontalScrollBar()->setValue(x + width - viewport()->width());
 }
 
 void MemoryView::mousePressEvent(QMouseEvent* event)
 {
   if (event->button() == Qt::RightButton) {
+    resetNibble();
     QMenu menu(this);
-    QAction* zeroAction = menu.addAction("Zero selected bytes");
-    zeroAction->setEnabled(selection_start_ != -1 && selection_end_ != -1);
-    QAction* chosen = menu.exec(event->globalPosition().toPoint());
-    if (chosen == zeroAction) {
+    QAction* copy = menu.addAction(tr("Copy Hex"));
+    QAction* paste = menu.addAction(pane_ == Pane::Hex ? tr("Paste Hex") : tr("Paste Text"));
+    QAction* zero = menu.addAction(tr("Zero Selection"));
+    QAction* all = menu.addAction(tr("Select All"));
+    menu.addSeparator();
+    QAction* undo = menu.addAction(tr("Undo"));
+    QAction* redo = menu.addAction(tr("Redo"));
+    copy->setEnabled(selectionLength() > 0);
+    zero->setEnabled(selectionLength() > 0);
+    paste->setEnabled(selectionLength() > 0);
+    all->setEnabled(!memory_data_.isEmpty());
+    undo->setEnabled(undo_stack_.canUndo());
+    redo->setEnabled(undo_stack_.canRedo());
+    QAction* action = menu.exec(event->globalPosition().toPoint());
+    if (action == copy)
+      copySelection();
+    else if (action == paste)
+      pasteClipboard();
+    else if (action == zero)
       zeroSelection();
-    }
+    else if (action == all)
+      selectAll();
+    else if (action == undo)
+      undo_stack_.undo();
+    else if (action == redo)
+      undo_stack_.redo();
+    event->accept();
     return;
   }
-
-  int idx = posToIndex(event->pos());
-  if (idx == -1) {
+  if (event->button() != Qt::LeftButton) {
+    QAbstractScrollArea::mousePressEvent(event);
     return;
   }
-
-  selection_start_ = selection_end_ = idx;
-  selecting_ = true;
-  edit_nibble_ = 0;  // Reset nibble edit state on new selection
-  update();
+  Pane clicked_pane = pane_;
+  const int index = indexAt(event->position().toPoint(), &clicked_pane, false);
+  if (index < 0)
+    return;
+  setFocus(Qt::MouseFocusReason);
+  resetNibble();
+  pane_ = clicked_pane;
+  const bool extend = event->modifiers().testFlag(Qt::ShiftModifier);
+  const int clicked_x = event->position().toPoint().x() + horizontalScrollBar()->value();
+  setCursor(index, extend);
+  if (!extend && pane_ == Pane::Hex) {
+    nibble_ = clicked_x >= hexCellX(index % kBytesPerRow) + char_width_ / 2 + char_width_ ? 1 : 0;
+  }
+  dragging_ = true;
+  drag_position_ = event->position().toPoint();
+  drag_timer_.start();
+  viewport()->update();
+  event->accept();
 }
 
 void MemoryView::mouseMoveEvent(QMouseEvent* event)
 {
-  if (selecting_) {
-    int idx = posToIndex(event->pos());
-    if (idx != -1 && idx != selection_end_) {
-      selection_end_ = idx;
-      update();
-    }
-  }
-
-  // Update the status bar to show the value in Little Endian
-  if (!status_bar_) {
+  if (!dragging_) {
+    QAbstractScrollArea::mouseMoveEvent(event);
     return;
   }
+  drag_position_ = event->position().toPoint();
+  updateDrag();
+  event->accept();
+}
 
-  // Get the number of bytes to show
-  int sel_min = qMin(selection_start_, selection_end_);
-  int sel_max = qMax(selection_start_, selection_end_);
-  unsigned nb_bytes =
-      qMin(sel_max - sel_min + 1, memory_data_.size() - sel_min);
-  nb_bytes = qMin(nb_bytes, 16u);
-
-  // Calculate the value
-  uint64_t value = 0;
-  for (uint64_t i = 0; i < nb_bytes; i++) {
-    value |= ((uint64_t)memory_data_[sel_min + i]) << (i * 8);
+void MemoryView::updateDrag()
+{
+  if (!dragging_)
+    return;
+  int scroll = 0;
+  if (drag_position_.y() < header_height_)
+    scroll = -qMin(8, 1 + (header_height_ - drag_position_.y()) / row_height_);
+  else if (drag_position_.y() >= viewport()->height())
+    scroll = qMin(8, 1 + (drag_position_.y() - viewport()->height()) / row_height_);
+  verticalScrollBar()->setValue(verticalScrollBar()->value() + scroll);
+  if (drag_position_.x() < 0)
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() - char_width_ * 3);
+  else if (drag_position_.x() >= viewport()->width())
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() + char_width_ * 3);
+  QPoint position = drag_position_;
+  position.setY(qBound(header_height_, position.y(),
+                       qMax(header_height_, viewport()->height() - 1)));
+  Pane target = pane_;
+  const int index = indexAt(position, &target, true);
+  if (index != cursor_) {
+    resetNibble();
+    setCursor(index, true);
   }
+}
 
-  QString addr_str = QString("%1").arg(sel_min, 2, 16, QChar('0')).toUpper();
-  QString value_str =
-      QString("%1").arg(value, 2 * nb_bytes, 16, QChar('0')).toUpper();
-  status_bar_->showMessage(
-      QString("@0x%1: 0x%2 (%3)").arg(addr_str).arg(value_str).arg(value));
+void MemoryView::stopDragging()
+{
+  dragging_ = false;
+  drag_timer_.stop();
 }
 
 void MemoryView::mouseReleaseEvent(QMouseEvent* event)
 {
-  Q_UNUSED(event);
-  if (selecting_) {
-    selecting_ = false;
-    copySelectionToClipboard();
-  }
-}
-
-void MemoryView::copySelectionToClipboard() const
-{
-  if (selection_start_ == -1 || selection_end_ == -1)
+  if (event->button() == Qt::LeftButton && dragging_) {
+    drag_position_ = event->position().toPoint();
+    updateDrag();
+    stopDragging();
+    event->accept();
     return;
-  int sel_min = qMin(selection_start_, selection_end_);
-  int sel_max = qMax(selection_start_, selection_end_);
-  QStringList hex_list;
-  for (int i = sel_min; i <= sel_max; ++i) {
-    hex_list << QString("%1").arg(memory_data_[i], 2, 16, QChar('0')).toUpper();
   }
-  QString hex_str = hex_list.join(" ");
-  QClipboard* clipboard = QApplication::clipboard();
-  clipboard->setText(hex_str);
+  QAbstractScrollArea::mouseReleaseEvent(event);
 }
 
-void MemoryView::wheelEvent(QWheelEvent* event)
+void MemoryView::copySelection()
 {
-  int delta = event->angleDelta().y() / 2;  // Adjust scroll speed
-  if (event->inverted()) {
-    first_visible_row_ -= delta;
+  const int start = selectionStart();
+  const int length = selectionLength();
+  if (start < 0)
+    return;
+  QString hex;
+  hex.reserve(qsizetype(length) * 3 - 1);
+  for (int i = 0; i < length; ++i) {
+    if (i)
+      hex.append(QLatin1Char(' '));
+    const quint8 byte = memory_data_.at(start + i);
+    hex.append(QLatin1Char(kHexDigits[byte >> 4]));
+    hex.append(QLatin1Char(kHexDigits[byte & 15]));
+  }
+  QApplication::clipboard()->setText(hex);
+}
+
+void MemoryView::pasteClipboard()
+{
+  resetNibble();
+  const int start = selectionStart();
+  if (start < 0)
+    return;
+  const QString text = QApplication::clipboard()->text();
+  QVector<quint8> bytes;
+  const int available = int(memory_data_.size()) - start;
+  if (pane_ == Pane::Hex) {
+    int high = -1;
+    bytes.reserve(qMin(qsizetype(available), text.size() / 2));
+    for (QChar character : text) {
+      if (character.isSpace())
+        continue;
+      const int digit = hexDigit(character);
+      if (digit < 0) {
+        QMessageBox::warning(this, tr("Cannot Paste Hex"),
+                             tr("Use only hexadecimal digits (0–9, A–F) and whitespace. "
+                                "Prefixes such as 0x are not accepted."));
+        return;
+      }
+      if (high < 0)
+        high = digit;
+      else {
+        if (bytes.size() >= available) {
+          QMessageBox::warning(this, tr("Cannot Paste"),
+                               tr("The pasted bytes would extend beyond the end of the file. "
+                                  "This editor only overwrites existing bytes."));
+          return;
+        }
+        bytes.append(quint8((high << 4) | digit));
+        high = -1;
+      }
+    }
+    if (high >= 0) {
+      QMessageBox::warning(this, tr("Cannot Paste Hex"),
+                           tr("Hexadecimal input must contain two digits for every byte."));
+      return;
+    }
   }
   else {
-    first_visible_row_ += delta;
+    const QByteArray utf8 = text.toUtf8();
+    if (utf8.size() > available) {
+      QMessageBox::warning(this, tr("Cannot Paste"),
+                           tr("The UTF-8 text would extend beyond the end of the file. "
+                              "This editor only overwrites existing bytes."));
+      return;
+    }
+    bytes.reserve(utf8.size());
+    for (char byte : utf8)
+      bytes.append(quint8(static_cast<unsigned char>(byte)));
   }
-  if (first_visible_row_ < 0) {
-    first_visible_row_ = 0;
-  }
-
-  first_visible_row_ = qMin(first_visible_row_, maxFirstVisibleRows());
-
-  // Redraw to reflect new scroll position
-  update();
-  event->accept();
-}
-
-int MemoryView::numVisibleRows() const
-{
-  return (height() - font_height_) / font_height_ - 1;  // -1 for header
-}
-
-int MemoryView::maxFirstVisibleRows() const
-{
-  int num_rows = (memory_data_.size() + BYTES_PER_LINE - 1) / BYTES_PER_LINE;
-  return qMax(0, num_rows - numVisibleRows());
-}
-
-void MemoryView::moveToPos(uint64_t pos, bool select_byte)
-{
-  // Get the first row to show
-  pos = qBound(0u, pos, (uint64_t)memory_data_.size() - 1);
-  int row = pos / BYTES_PER_LINE;
-  row = qBound(0, row, maxFirstVisibleRows());
-  first_visible_row_ = row;
-
-  if (select_byte) {
-    // Select the byte at the given position
-    selection_start_ = selection_end_ = pos;
-    edit_nibble_ = 0;  // Reset nibble edit state on new position
-  }
-
-  update();
+  if (bytes.isEmpty())
+    return;
+  overwrite(start, bytes, tr("Paste Bytes"));
+  selectRange(start, int(bytes.size()));
 }
 
 void MemoryView::zeroSelection()
 {
-  if (selection_start_ == -1 || selection_end_ == -1)
+  resetNibble();
+  int start = selectionStart();
+  int end = start + selectionLength();
+  if (start < 0)
     return;
-  int sel_min = qMin(selection_start_, selection_end_);
-  int sel_max = qMax(selection_start_, selection_end_);
-  for (int i = sel_min; i <= sel_max; ++i) {
-    memory_data_[i] = 0;
+  while (start < end && memory_data_.at(start) == 0)
+    ++start;
+  while (end > start && memory_data_.at(end - 1) == 0)
+    --end;
+  if (start < end)
+    overwrite(start, QVector<quint8>(end - start, 0), tr("Zero Selection"));
+}
+
+void MemoryView::selectAll()
+{
+  selectRange(0, int(memory_data_.size()));
+}
+
+void MemoryView::overwrite(int start, const QVector<quint8>& bytes,
+                           const QString& description, quint64 token)
+{
+  if (start < 0 || start > memory_data_.size() ||
+      bytes.size() > memory_data_.size() - start)
+    return;
+  int first = 0;
+  int last = int(bytes.size());
+  while (first < last && bytes[first] == memory_data_.at(start + first))
+    ++first;
+  while (last > first && bytes[last - 1] == memory_data_.at(start + last - 1))
+    --last;
+  if (first == last)
+    return;
+  QVector<quint8> before(last - first);
+  QVector<quint8> after(last - first);
+  std::copy_n(memory_data_.constData() + start + first, last - first, before.data());
+  std::copy_n(bytes.constData() + first, last - first, after.data());
+  pushing_command_ = true;
+  undo_stack_.push(new ByteEditCommand(this, start + first, std::move(before),
+                                      std::move(after), description, token));
+  pushing_command_ = false;
+}
+
+void MemoryView::applyBytes(int start, const QVector<quint8>& bytes)
+{
+  std::copy(bytes.cbegin(), bytes.cend(), memory_data_.begin() + start);
+  viewport()->update();
+  emit dataChanged();
+}
+
+void MemoryView::enterHexDigit(int digit)
+{
+  if (selectionLength() != 1)
+    return;
+  const int index = cursor_;
+  const quint8 original = memory_data_.at(index);
+  const bool low = nibble_ == 1;
+  if (!low)
+    ++edit_token_;
+  const quint8 byte = low ? quint8((original & 0xF0) | digit)
+                         : quint8((digit << 4) | (original & 0x0F));
+  overwrite(index, QVector<quint8>{byte}, tr("Edit Byte"), edit_token_);
+  if (low) {
+    resetNibble();
+    if (index + 1 < memory_data_.size())
+      setCursor(index + 1, false);
   }
-  update();
+  else {
+    nibble_ = 1;
+  }
+  viewport()->update();
+}
+
+void MemoryView::enterAscii(quint8 byte)
+{
+  if (selectionLength() != 1)
+    return;
+  const int index = cursor_;
+  resetNibble();
+  overwrite(index, QVector<quint8>{byte}, tr("Edit ASCII Byte"));
+  if (index + 1 < memory_data_.size())
+    setCursor(index + 1, false);
 }
 
 void MemoryView::keyPressEvent(QKeyEvent* event)
 {
-  if (selection_start_ == -1 || selection_end_ == -1 ||
-      selection_start_ != selection_end_)
-    return;
-
-  int idx = selection_start_;
-  int value = -1;
-  int key = event->key();
-  if ((key >= Qt::Key_0 && key <= Qt::Key_9)) {
-    value = key - Qt::Key_0;
+  if (event->matches(QKeySequence::Copy)) {
+    resetNibble();
+    copySelection();
   }
-  else if (key >= Qt::Key_A && key <= Qt::Key_F) {
-    value = 10 + (key - Qt::Key_A);
+  else if (event->matches(QKeySequence::Paste)) {
+    pasteClipboard();
   }
-
-  if (value != -1) {
-    editSelectedByte(value);
-    event->accept();
-    return;
+  else if (event->matches(QKeySequence::SelectAll)) {
+    selectAll();
   }
-
-  QWidget::keyPressEvent(event);
-}
-
-void MemoryView::editSelectedByte(int value)
-{
-  if (selection_start_ == -1 || selection_end_ == -1 ||
-      selection_start_ != selection_end_)
-    return;
-  int idx = selection_start_;
-  quint8 orig = memory_data_[idx];
-  if (edit_nibble_ == 0) {
-    // High nibble
-    memory_data_[idx] = (value << 4) | (orig & 0x0F);
-    edit_nibble_ = 1;
+  else if (event->matches(QKeySequence::Undo)) {
+    resetNibble();
+    undo_stack_.undo();
+  }
+  else if (event->matches(QKeySequence::Redo)) {
+    resetNibble();
+    undo_stack_.redo();
+  }
+  else if (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) {
+    resetNibble();
+    pane_ = pane_ == Pane::Hex ? Pane::Ascii : Pane::Hex;
+    ensureCursorVisible();
   }
   else {
-    // Low nibble
-    memory_data_[idx] = (orig & 0xF0) | value;
-    edit_nibble_ = 0;
-    // Optionally move selection to next byte
-    if (idx + 1 < memory_data_.size()) {
-      selection_start_ = selection_end_ = idx + 1;
+    const Qt::KeyboardModifiers modifiers = event->modifiers();
+    const bool command = modifiers.testFlag(Qt::ControlModifier) ||
+                         modifiers.testFlag(Qt::MetaModifier);
+    const bool extend = modifiers.testFlag(Qt::ShiftModifier);
+    const int index = cursor_ < 0 ? 0 : cursor_;
+    qint64 destination = index;
+    bool navigation = !modifiers.testFlag(Qt::AltModifier);
+    switch (event->key()) {
+      case Qt::Key_Left: destination = qint64(index) - 1; break;
+      case Qt::Key_Right: destination = qint64(index) + 1; break;
+      case Qt::Key_Up: destination = qint64(index) - kBytesPerRow; break;
+      case Qt::Key_Down: destination = qint64(index) + kBytesPerRow; break;
+      case Qt::Key_PageUp: destination = qint64(index) - qint64(visibleRows()) * kBytesPerRow; break;
+      case Qt::Key_PageDown: destination = qint64(index) + qint64(visibleRows()) * kBytesPerRow; break;
+      case Qt::Key_Home: destination = command ? 0 : index - index % kBytesPerRow; break;
+      case Qt::Key_End:
+        destination = command ? qint64(memory_data_.size()) - 1
+                              : qint64(index - index % kBytesPerRow) + kBytesPerRow - 1;
+        break;
+      default: navigation = false; break;
+    }
+    if (navigation && !memory_data_.isEmpty()) {
+      resetNibble();
+      setCursor(int(qBound(qint64(0), destination, qint64(memory_data_.size() - 1))), extend);
+    }
+    else if (!command && !modifiers.testFlag(Qt::AltModifier) &&
+             event->text().size() == 1 && selectionLength() == 1) {
+      const QChar character = event->text().at(0);
+      if (pane_ == Pane::Hex && hexDigit(character) >= 0)
+        enterHexDigit(hexDigit(character));
+      else if (pane_ == Pane::Ascii && character.unicode() >= 32 &&
+               character.unicode() <= 126)
+        enterAscii(quint8(character.unicode()));
+      else {
+        QAbstractScrollArea::keyPressEvent(event);
+        return;
+      }
+    }
+    else {
+      QAbstractScrollArea::keyPressEvent(event);
+      return;
     }
   }
-  update();
+  event->accept();
 }

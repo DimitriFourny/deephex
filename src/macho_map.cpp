@@ -1,435 +1,185 @@
 #include "macho_map.h"
-#include <QDebug>
-#include <QVector>
-#include <QtEndian>
-#include <cstring>
 
-// Mach-O magic numbers
-#define MH_MAGIC 0xfeedface
-#define MH_CIGAM 0xcefaedfe
-#define MH_MAGIC_64 0xfeedfacf
-#define MH_CIGAM_64 0xcffaedfe
-#define FAT_MAGIC 0xcafebabe
-#define FAT_CIGAM 0xbebafeca
+#include <algorithm>
 
-// Load command types
-#define LC_SEGMENT 0x1
-#define LC_SEGMENT_64 0x19
-
-// CPU types
-#define CPU_TYPE_X86 0x7
-#define CPU_TYPE_X86_64 0x1000007
-#define CPU_TYPE_ARM 0xc
-#define CPU_TYPE_ARM64 0x100000c
-
-struct SegmentInfo {
-  QString name;
-  quint64 fileOffset;
-  quint64 fileSize;
-  quint64 vmAddress;
-  quint64 vmSize;
-};
-
-struct ArchInfo {
-  QString architecture;
-  QVector<SegmentInfo> segments;
-};
-
-// Helper function to safely read data with bounds checking
-template <typename T>
-bool safeRead(const QVector<quint8>& data, quint32 offset, T& result)
+namespace {
+quint32 magicAt(const QVector<quint8>& data, quint64 offset)
 {
-  if (offset + sizeof(T) > static_cast<quint32>(data.size())) {
-    return false;
-  }
-  memcpy(&result, data.constData() + offset, sizeof(T));
-  return true;
+  const quint64 size = static_cast<quint64>(data.size());
+  if (offset > size || 4 > size - offset)
+    return 0;
+  const quint8* bytes = data.constData() + static_cast<qsizetype>(offset);
+  return (quint32(bytes[0]) << 24) | (quint32(bytes[1]) << 16) |
+         (quint32(bytes[2]) << 8) | bytes[3];
 }
 
-// Helper function to safely read string with bounds checking
-bool safeReadString(const QVector<quint8>& data,
-                    quint32 offset,
-                    quint32 maxLen,
-                    QString& result)
+QString cpuName(quint64 cpu)
 {
-  if (offset >= static_cast<quint32>(data.size())) {
-    return false;
-  }
-
-  quint32 availableLen = data.size() - offset;
-  quint32 readLen = qMin(maxLen, availableLen);
-
-  // Find null terminator or use full length
-  quint32 actualLen = 0;
-  for (quint32 i = 0; i < readLen; ++i) {
-    if (data[offset + i] == 0) {
-      actualLen = i;
-      break;
-    }
-    actualLen = i + 1;
-  }
-
-  result = QString::fromUtf8(
-      reinterpret_cast<const char*>(data.constData() + offset), actualLen);
-  return true;
-}
-
-// Helper function to determine endianness and return swapped value if needed
-template <typename T>
-T maybeSwap(T value, bool needSwap)
-{
-  if (!needSwap)
-    return value;
-
-  if (sizeof(T) == 2) {
-    return qFromBigEndian<T>(value);
-  }
-  else if (sizeof(T) == 4) {
-    return qFromBigEndian<T>(value);
-  }
-  else if (sizeof(T) == 8) {
-    return qFromBigEndian<T>(value);
-  }
-  return value;
-}
-
-QString cpuTypeToString(quint32 cpuType)
-{
-  switch (cpuType) {
-    case CPU_TYPE_X86:
-      return "i386";
-    case CPU_TYPE_X86_64:
-      return "x86_64";
-    case CPU_TYPE_ARM:
-      return "arm";
-    case CPU_TYPE_ARM64:
-      return "arm64";
-    default:
-      return QString("unknown_%1").arg(cpuType);
+  switch (cpu) {
+    case 7: return QStringLiteral("i386");
+    case 0x01000007: return QStringLiteral("x86_64");
+    case 12: return QStringLiteral("arm");
+    case 0x0100000c: return QStringLiteral("arm64");
+    case 0x0200000c: return QStringLiteral("arm64_32");
+    case 18: return QStringLiteral("ppc");
+    case 0x01000012: return QStringLiteral("ppc64");
+    default: return QStringLiteral("CPU 0x%1").arg(cpu, 0, 16);
   }
 }
-
-// Parse single Mach-O architecture
-bool parseSingleMachO(const QVector<quint8>& data,
-                      quint32 offset,
-                      ArchInfo& archInfo)
-{
-  if (offset >= static_cast<quint32>(data.size())) {
-    return false;
-  }
-
-  quint32 magic;
-  if (!safeRead(data, offset, magic)) {
-    return false;
-  }
-
-  bool is64Bit = false;
-  bool needSwap = false;
-
-  switch (magic) {
-    case MH_MAGIC:
-      is64Bit = false;
-      needSwap = false;
-      break;
-    case MH_CIGAM:
-      is64Bit = false;
-      needSwap = true;
-      break;
-    case MH_MAGIC_64:
-      is64Bit = true;
-      needSwap = false;
-      break;
-    case MH_CIGAM_64:
-      is64Bit = true;
-      needSwap = true;
-      break;
-    default:
-      return false;
-  }
-
-  // Read Mach-O header
-  quint32 headerSize = is64Bit ? 32 : 28;
-  if (offset + headerSize > static_cast<quint32>(data.size())) {
-    return false;
-  }
-
-  quint32 cpuType, cpuSubType, fileType, ncmds, sizeofcmds, flags;
-  quint32 reserved = 0;  // Only for 64-bit
-
-  if (!safeRead(data, offset + 4, cpuType))
-    return false;
-  if (!safeRead(data, offset + 8, cpuSubType))
-    return false;
-  if (!safeRead(data, offset + 12, fileType))
-    return false;
-  if (!safeRead(data, offset + 16, ncmds))
-    return false;
-  if (!safeRead(data, offset + 20, sizeofcmds))
-    return false;
-  if (!safeRead(data, offset + 24, flags))
-    return false;
-  if (is64Bit && !safeRead(data, offset + 28, reserved))
-    return false;
-
-  // Apply byte swapping if needed
-  cpuType = maybeSwap(cpuType, needSwap);
-  ncmds = maybeSwap(ncmds, needSwap);
-  sizeofcmds = maybeSwap(sizeofcmds, needSwap);
-
-  archInfo.architecture = cpuTypeToString(cpuType);
-
-  // Parse load commands
-  quint32 cmdOffset = offset + headerSize;
-
-  for (quint32 i = 0; i < ncmds; ++i) {
-    if (cmdOffset + 8 > static_cast<quint32>(data.size())) {
-      break;
-    }
-
-    quint32 cmd, cmdsize;
-    if (!safeRead(data, cmdOffset, cmd))
-      break;
-    if (!safeRead(data, cmdOffset + 4, cmdsize))
-      break;
-
-    cmd = maybeSwap(cmd, needSwap);
-    cmdsize = maybeSwap(cmdsize, needSwap);
-
-    if (cmdOffset + cmdsize > static_cast<quint32>(data.size())) {
-      break;
-    }
-
-    if (cmd == LC_SEGMENT || cmd == LC_SEGMENT_64) {
-      SegmentInfo segInfo;
-
-      // Read segment name (16 bytes)
-      if (!safeReadString(data, cmdOffset + 8, 16, segInfo.name)) {
-        cmdOffset += cmdsize;
-        continue;
-      }
-
-      if (cmd == LC_SEGMENT_64) {
-        // 64-bit segment
-        quint64 vmaddr, vmsize, fileoff, filesize;
-        if (!safeRead(data, cmdOffset + 24, vmaddr))
-          break;
-        if (!safeRead(data, cmdOffset + 32, vmsize))
-          break;
-        if (!safeRead(data, cmdOffset + 40, fileoff))
-          break;
-        if (!safeRead(data, cmdOffset + 48, filesize))
-          break;
-
-        segInfo.vmAddress = maybeSwap(vmaddr, needSwap);
-        segInfo.vmSize = maybeSwap(vmsize, needSwap);
-        segInfo.fileOffset = offset + maybeSwap(fileoff, needSwap);
-        segInfo.fileSize = maybeSwap(filesize, needSwap);
-      }
-      else {
-        // 32-bit segment
-        quint32 vmaddr, vmsize, fileoff, filesize;
-        if (!safeRead(data, cmdOffset + 24, vmaddr))
-          break;
-        if (!safeRead(data, cmdOffset + 28, vmsize))
-          break;
-        if (!safeRead(data, cmdOffset + 32, fileoff))
-          break;
-        if (!safeRead(data, cmdOffset + 36, filesize))
-          break;
-
-        segInfo.vmAddress = maybeSwap(vmaddr, needSwap);
-        segInfo.vmSize = maybeSwap(vmsize, needSwap);
-        segInfo.fileOffset = maybeSwap(fileoff, needSwap);
-        segInfo.fileSize = maybeSwap(filesize, needSwap);
-      }
-
-      // Validate segment bounds
-      if (segInfo.fileOffset + segInfo.fileSize <=
-          static_cast<quint64>(data.size())) {
-        archInfo.segments.append(segInfo);
-      }
-    }
-
-    cmdOffset += cmdsize;
-  }
-
-  return true;
-}
-
-// Main function to parse Mach-O data
-QVector<ArchInfo> parseMachOSegments(const QVector<quint8>& data)
-{
-  QVector<ArchInfo> result;
-
-  if (data.size() < 4) {
-    qDebug() << "Data too small to contain Mach-O header";
-    return result;
-  }
-
-  quint32 magic;
-  if (!safeRead(data, 0, magic)) {
-    return result;
-  }
-
-  // Check if it's a universal binary
-  if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
-    bool needSwap = (magic == FAT_CIGAM);
-
-    if (data.size() < 8) {
-      qDebug() << "Universal binary header too small";
-      return result;
-    }
-
-    quint32 nfat_arch;
-    if (!safeRead(data, 4, nfat_arch)) {
-      return result;
-    }
-
-    nfat_arch = maybeSwap(nfat_arch, needSwap);
-
-    if (8 + nfat_arch * 20 > static_cast<quint32>(data.size())) {
-      qDebug() << "Universal binary architecture table extends beyond data";
-      return result;
-    }
-
-    // Parse each architecture
-    for (quint32 i = 0; i < nfat_arch; ++i) {
-      quint32 archOffset = 8 + i * 20;
-
-      quint32 cpuType, cpuSubType, offset, size, align;
-      if (!safeRead(data, archOffset, cpuType))
-        continue;
-      if (!safeRead(data, archOffset + 4, cpuSubType))
-        continue;
-      if (!safeRead(data, archOffset + 8, offset))
-        continue;
-      if (!safeRead(data, archOffset + 12, size))
-        continue;
-      if (!safeRead(data, archOffset + 16, align))
-        continue;
-
-      offset = maybeSwap(offset, needSwap);
-      size = maybeSwap(size, needSwap);
-
-      // Validate architecture bounds
-      if (offset + size > static_cast<quint32>(data.size())) {
-        qDebug() << "Architecture" << i << "extends beyond data bounds";
-        continue;
-      }
-
-      ArchInfo archInfo;
-      if (parseSingleMachO(data, offset, archInfo)) {
-        result.append(archInfo);
-      }
-    }
-  }
-  else {
-    // Single architecture Mach-O
-    ArchInfo archInfo;
-    if (parseSingleMachO(data, 0, archInfo)) {
-      result.append(archInfo);
-    }
-  }
-
-  return result;
-}
+}  // namespace
 
 bool MachoMap::isSupported(const QVector<quint8>& data)
 {
-  if (data.size() < 4) {
-    return false;
+  switch (magicAt(data, 0)) {
+    case 0xfeedface: case 0xcefaedfe:
+    case 0xfeedfacf: case 0xcffaedfe:
+    case 0xcafebabe: case 0xbebafeca:
+    case 0xcafebabf: case 0xbfbafeca:
+      return true;
+    default:
+      return false;
   }
-
-  quint32 magic;
-  if (!safeRead(data, 0, magic)) {
-    return false;
-  }
-
-  // Check for universal binary (FAT) magic
-  if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
-    // Verify we have enough data for the FAT header
-    if (data.size() < 8) {
-      return false;
-    }
-
-    bool needSwap = (magic == FAT_CIGAM);
-    quint32 nfat_arch;
-    if (!safeRead(data, 4, nfat_arch)) {
-      return false;
-    }
-
-    nfat_arch = maybeSwap(nfat_arch, needSwap);
-
-    // Sanity check: reasonable number of architectures (typically 1-4)
-    if (nfat_arch == 0 || nfat_arch > 16) {
-      return false;
-    }
-
-    // Verify we have enough data for the architecture table
-    if (8 + nfat_arch * 20 > static_cast<quint32>(data.size())) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-QColor getDistinguishableColorRGB(int index)
-{
-  // First few colors manually chosen for maximum distinction
-  static const std::vector<QColor> distinctColors = {
-      QColor(255, 0, 0),      // Red
-      QColor(0, 0, 255),      // Blue
-      QColor(0, 255, 0),      // Green
-      QColor(255, 255, 0),    // Yellow
-      QColor(255, 0, 255),    // Magenta
-      QColor(0, 255, 255),    // Cyan
-      QColor(128, 0, 128),    // Purple
-      QColor(255, 165, 0),    // Orange
-      QColor(128, 128, 128),  // Gray
-      QColor(165, 42, 42),    // Brown
-      QColor(255, 192, 203),  // Pink
-      QColor(0, 128, 0),      // Dark Green
-      QColor(0, 0, 128),      // Navy
-      QColor(128, 0, 0),      // Maroon
-      QColor(128, 128, 0),    // Olive
-      QColor(0, 128, 128)     // Teal
-  };
-  return distinctColors[index % distinctColors.size()];
 }
 
 void MachoMap::calculateRegions(const QVector<quint8>& data,
                                 QVector<MapRegion>& regions,
                                 QColor font_color)
 {
-  // StandardMap::calculateRegions(data, regions, font_color);
-
-  QVector<ArchInfo> architectures = parseMachOSegments(data);
-
-  if (architectures.isEmpty()) {
-    qDebug() << "No valid Mach-O architectures found";
+  regions.clear();
+  const quint64 size = static_cast<quint64>(data.size());
+  const auto value = [&](quint64 offset, unsigned width, bool little) {
+    quint64 result = 0;
+    readUnsigned(data, offset, width, little, result);
+    return result;
+  };
+  const auto parseThin = [&](quint64 base, quint64 length,
+                             quint64 expected_cpu, bool check_cpu) {
+    const quint32 magic = magicAt(data, base);
+    const bool is64 = magic == 0xfeedfacf || magic == 0xcffaedfe;
+    const bool little = magic == 0xcefaedfe || magic == 0xcffaedfe;
+    if (!is64 && magic != 0xfeedface && magic != 0xcefaedfe)
+      return false;
+    const quint64 header_size = is64 ? 32 : 28;
+    if (base > size || length > size - base || length < header_size)
+      return false;
+    const quint64 cpu = value(base + 4, 4, little);
+    if (check_cpu && cpu != expected_cpu)
+      return false;
+    const QString architecture = cpuName(cpu);
+    const quint64 count = value(base + 16, 4, little);
+    const quint64 commands_size = value(base + 20, 4, little);
+    if (commands_size > length - header_size || count > commands_size / 8)
+      return false;
+    const quint64 commands_end = header_size + commands_size;
+    regions.append({base, base + header_size, QColor(143, 116, 187),
+                    QStringLiteral("Mach-O %1 header")
+                        .arg(architecture), QStringLiteral("Header")});
+    quint64 cursor = header_size;
+    for (quint64 i = 0; i < count; ++i) {
+      if (cursor > commands_end || 8 > commands_end - cursor)
+        return false;
+      const quint64 command = value(base + cursor, 4, little);
+      const quint64 command_size = value(base + cursor + 4, 4, little);
+      if (command_size < 8 || command_size > commands_end - cursor ||
+          command_size % (is64 ? 8 : 4) != 0)
+        return false;
+      if (command == 1 || command == 0x19) {
+        const bool segment64 = command == 0x19;
+        if (segment64 != is64)
+          return false;
+        const quint64 minimum = segment64 ? 72 : 56;
+        if (command_size < minimum)
+          return false;
+        const quint64 sections = value(base + cursor + (segment64 ? 64 : 48),
+                                        4, little);
+        if (sections > (command_size - minimum) / (segment64 ? 80 : 68))
+          return false;
+        const quint64 offset = value(base + cursor + (segment64 ? 40 : 32),
+                                      segment64 ? 8 : 4, little);
+        const quint64 file_size = value(base + cursor + (segment64 ? 48 : 36),
+                                         segment64 ? 8 : 4, little);
+        if (file_size != 0) {
+          if (offset > length || file_size > length - offset)
+            return false;
+          const char* name_bytes = reinterpret_cast<const char*>(
+              data.constData() + static_cast<qsizetype>(base + cursor + 8));
+          int name_length = 0;
+          while (name_length < 16 && name_bytes[name_length] != '\0')
+            ++name_length;
+          QString name = QString::fromLatin1(name_bytes, name_length);
+          if (name.isEmpty())
+            name = QStringLiteral("Unnamed segment");
+          regions.append({base + offset, base + offset + file_size,
+                          QColor::fromHsv(static_cast<int>((i * 47 + 195) % 360),
+                                          125, 190),
+                          QStringLiteral("%1 — %2").arg(architecture, name),
+                          name});
+        }
+      }
+      cursor += command_size;
+    }
+    return cursor == commands_end;
+  };
+  const auto parse = [&]() {
+    if (!isSupported(data))
+      return false;
+    const quint32 magic = magicAt(data, 0);
+    const bool fat64 = magic == 0xcafebabf || magic == 0xbfbafeca;
+    const bool fat = fat64 || magic == 0xcafebabe || magic == 0xbebafeca;
+    if (!fat)
+      return parseThin(0, size, 0, false);
+    if (size < 8)
+      return false;
+    const bool little = magic == 0xbebafeca || magic == 0xbfbafeca;
+    const quint64 count = value(4, 4, little);
+    const quint64 entry_size = fat64 ? 32 : 20;
+    if (count == 0 || count > (size - 8) / entry_size)
+      return false;
+    const quint64 table_end = 8 + count * entry_size;
+    struct Architecture {
+      quint64 offset;
+      quint64 length;
+      quint64 cpu;
+    };
+    QVector<Architecture> architectures;
+    architectures.reserve(static_cast<qsizetype>(count));
+    for (quint64 i = 0; i < count; ++i) {
+      const quint64 entry = 8 + i * entry_size;
+      const quint64 cpu = value(entry, 4, little);
+      const quint64 offset = value(entry + 8, fat64 ? 8 : 4, little);
+      const quint64 length = value(entry + (fat64 ? 16 : 12),
+                                   fat64 ? 8 : 4, little);
+      const quint64 alignment = value(entry + (fat64 ? 24 : 16), 4, little);
+      if (offset < table_end || offset > size || length == 0 ||
+          length > size - offset || alignment >= 64 ||
+          offset % (quint64(1) << alignment) != 0)
+        return false;
+      architectures.append({offset, length, cpu});
+    }
+    std::sort(architectures.begin(), architectures.end(),
+              [](const Architecture& a, const Architecture& b) {
+      return a.offset < b.offset;
+    });
+    quint64 previous_end = table_end;
+    for (const Architecture& architecture : architectures) {
+      if (architecture.offset < previous_end)
+        return false;
+      previous_end = architecture.offset + architecture.length;
+    }
+    regions.append({0, table_end, QColor(157, 133, 191),
+                    QStringLiteral("Universal Mach-O%1 architecture table (%2)")
+                        .arg(fat64 ? QStringLiteral("64") : QString())
+                        .arg(count), QStringLiteral("Architecture table")});
+    for (const Architecture& architecture : architectures) {
+      if (!parseThin(architecture.offset, architecture.length,
+                     architecture.cpu, true))
+        return false;
+    }
+    return true;
+  };
+  if (!parse()) {
+    StandardMap::calculateRegions(data, regions, font_color);
     return;
   }
-
-  qDebug() << "Found" << architectures.size() << "architecture(s):";
-
-  int colorIndex = 0;
-
-  for (const ArchInfo& arch : architectures) {
-    qDebug() << "\nArchitecture:" << arch.architecture;
-    qDebug() << "Segments:" << arch.segments.size();
-
-    for (const SegmentInfo& seg : arch.segments) {
-      qDebug() << QString(
-                      "  %1: offset=0x%2, size=0x%3, vmaddr=0x%4, vmsize=0x%5")
-                      .arg(seg.name)
-                      .arg(seg.fileOffset, 0, 16)
-                      .arg(seg.fileSize, 0, 16)
-                      .arg(seg.vmAddress, 0, 16)
-                      .arg(seg.vmSize, 0, 16);
-
-      regions.push_back({seg.fileOffset, seg.fileOffset + seg.fileSize,
-                         getDistinguishableColorRGB(colorIndex++)});
-    }
-  }
+  completeRegions(regions, size, font_color);
 }

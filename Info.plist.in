@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+  <key>CFBundleIdentifier</key><string>com.deephex.editor</string>
+  <key>CFBundleName</key><string>DeepHex</string>
+  <key>CFBundleDisplayName</key><string>DeepHex</string>
+  <key>CFBundleShortVersionString</key><string>${PROJECT_VERSION}</string>
+  <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>favicon.icns</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>CFBundleDocumentTypes</key>
+  <array><dict>
+    <key>CFBundleTypeName</key><string>Binary File</string>
+    <key>CFBundleTypeRole</key><string>Editor</string>
+    <key>LSHandlerRank</key><string>Alternate</string>
+    <key>LSItemContentTypes</key><array><string>public.data</string></array>
+  </dict></array>
+</dict>
+</plist>

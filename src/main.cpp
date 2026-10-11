@@ -1,30 +1,49 @@
 #include <QApplication>
-#include <QColor>
-#include <QPalette>
+#include <QCommandLineParser>
+#include <QFileOpenEvent>
+#include <QIcon>
 #include "mainwindow.h"
+
+class DeepHexApplication : public QApplication {
+ public:
+  using QApplication::QApplication;
+  MainWindow* window = nullptr;
+  QString pendingFile;
+
+ protected:
+  bool event(QEvent* event) override {
+    if (event->type() == QEvent::FileOpen) {
+      const QString file = static_cast<QFileOpenEvent*>(event)->file();
+      if (window) {
+        window->show();
+        window->raise();
+        window->activateWindow();
+        window->openFile(file);
+      } else pendingFile = file;
+      return true;
+    }
+    return QApplication::event(event);
+  }
+};
 
 int main(int argc, char* argv[])
 {
-  QApplication app(argc, argv);
-
-  // Set a dark color scheme
-  QPalette palette;
-  palette.setColor(QPalette::Window, QColor("#232629"));
-  palette.setColor(QPalette::WindowText, QColor("#f0f0f0"));
-  palette.setColor(QPalette::Base, QColor("#181a1b"));
-  palette.setColor(QPalette::AlternateBase, QColor("#232629"));
-  palette.setColor(QPalette::ToolTipBase, QColor("#232629"));
-  palette.setColor(QPalette::ToolTipText, QColor("#f0f0f0"));
-  palette.setColor(QPalette::Text, QColor("#f0f0f0"));
-  palette.setColor(QPalette::Button, QColor("#232629"));
-  palette.setColor(QPalette::ButtonText, QColor("#f0f0f0"));
-  palette.setColor(QPalette::BrightText, QColor("#ff4040"));
-  palette.setColor(QPalette::Highlight, QColor("#14305c"));
-  palette.setColor(QPalette::HighlightedText, QColor("#ffffff"));
-
-  app.setPalette(palette);
-
+  DeepHexApplication app(argc, argv);
+  app.setOrganizationName("DeepHex");
+  app.setApplicationName("DeepHex");
+  app.setApplicationVersion("2.0.0");
+  app.setWindowIcon(QIcon(":/img/favicon.png"));
+  QCommandLineParser parser;
+  parser.setApplicationDescription("DeepHex — an overwrite-only binary editor and inspector");
+  parser.addHelpOption();
+  parser.addVersionOption();
+  parser.addPositionalArgument("file", "Binary file to open", "[file]");
+  parser.process(app);
+  if (parser.positionalArguments().size() > 1) parser.showHelp(1);
   MainWindow mainWindow;
+  app.window = &mainWindow;
   mainWindow.show();
+  const QString path = parser.positionalArguments().isEmpty() ? app.pendingFile : parser.positionalArguments().first();
+  if (!path.isEmpty()) mainWindow.openFile(path);
   return app.exec();
 }
