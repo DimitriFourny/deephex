@@ -2,10 +2,17 @@
 #import <AppKit/AppKit.h>
 #import "memoryview.h"
 
-@interface DHMainWindowController : NSWindowController <NSWindowDelegate, DHMemoryViewDelegate, NSTableViewDataSource, NSTableViewDelegate, NSToolbarDelegate, NSToolbarItemValidation, NSSplitViewDelegate, NSMenuItemValidation>
-@property(nonatomic, readonly) DHMemoryView *editor;
-- (BOOL)openFile:(NSString *)path;
-- (BOOL)saveFile:(NSString *)path;
+@interface DHMainWindowController : NSWindowController <NSWindowDelegate,
+                                                        DHMemoryViewDelegate,
+                                                        NSTableViewDataSource,
+                                                        NSTableViewDelegate,
+                                                        NSToolbarDelegate,
+                                                        NSToolbarItemValidation,
+                                                        NSSplitViewDelegate,
+                                                        NSMenuItemValidation>
+@property(nonatomic, readonly) DHMemoryView* editor;
+- (BOOL)openFile:(NSString*)path;
+- (BOOL)saveFile:(NSString*)path;
 - (BOOL)maybeSave;
 - (void)installMenus;
 - (void)openDocument:(id)sender;
