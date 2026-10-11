@@ -8,6 +8,7 @@
 @property(nonatomic, copy) NSString* pendingFile;
 @end
 @implementation DHApplicationDelegate
+
 - (void)applicationDidFinishLaunching:(NSNotification*)notification
 {
   (void)notification;
@@ -23,6 +24,7 @@
     self.pendingFile = nil;
   }
 }
+
 - (BOOL)application:(NSApplication*)application openFile:(NSString*)filename
 {
   (void)application;
@@ -34,11 +36,13 @@
   [NSApp activateIgnoringOtherApps:YES];
   return [self.controller openFile:filename];
 }
+
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender
 {
   (void)sender;
   return [self.controller maybeSave] ? NSTerminateNow : NSTerminateCancel;
 }
+
 - (BOOL)applicationShouldHandleReopen:(NSApplication*)sender
                     hasVisibleWindows:(BOOL)visible
 {
@@ -47,7 +51,9 @@
     [self.controller showWindow:nil];
   return YES;
 }
+
 @end
+
 int main(int argc, char* argv[])
 {
   @autoreleasepool {

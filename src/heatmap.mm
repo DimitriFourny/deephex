@@ -8,9 +8,11 @@
   uint64_t _totalSize, _viewStart, _viewEnd;
   BOOL _dragging;
 }
+
 @end
 
 @implementation DHHeatMap
+
 - (instancetype)initWithFrame:(NSRect)frame
 {
   if ((self = [super initWithFrame:frame])) {
@@ -23,10 +25,12 @@
   }
   return self;
 }
+
 - (BOOL)isFlipped
 {
   return YES;
 }
+
 - (void)setRegions:(const std::vector<MapRegion>&)regions
          totalSize:(uint64_t)size
 {
@@ -37,11 +41,13 @@
   [self updateViewport];
   [self rebuildToolTip];
 }
+
 - (void)setMemoryView:(DHMemoryView*)view
 {
   _memoryView = view;
   [self updateViewport];
 }
+
 - (void)updateViewport
 {
   _viewStart = std::min(_memoryView.visibleByteStart, _totalSize);
@@ -49,27 +55,32 @@
       std::max(_viewStart, std::min(_memoryView.visibleByteEnd, _totalSize));
   self.needsDisplay = YES;
 }
+
 - (void)viewDidChangeEffectiveAppearance
 {
   [super viewDidChangeEffectiveAppearance];
   self.needsDisplay = YES;
 }
+
 - (void)setFrameSize:(NSSize)size
 {
   [super setFrameSize:size];
   [self rebuildToolTip];
 }
+
 - (void)rebuildToolTip
 {
   [self removeAllToolTips];
   if (self.bounds.size.width > 0 && self.bounds.size.height > 0)
     [self addToolTipRect:self.bounds owner:self userData:nullptr];
 }
+
 - (void)resetCursorRects
 {
   [super resetCursorRects];
   [self addCursorRect:self.bounds cursor:NSCursor.pointingHandCursor];
 }
+
 - (uint64_t)offsetAt:(CGFloat)x
 {
   CGFloat width = self.bounds.size.width;
@@ -79,6 +90,7 @@
       std::clamp<CGFloat>(x - self.bounds.origin.x, 0, width - 1) / (width - 1);
   return static_cast<uint64_t>(fraction * (_totalSize - 1));
 }
+
 - (NSString*)view:(NSView*)view
     stringForToolTip:(NSToolTipTag)tag
                point:(NSPoint)point
@@ -111,6 +123,7 @@
                                     static_cast<unsigned long long>(offset),
                                     range];
 }
+
 - (void)drawRect:(NSRect)dirtyRect
 {
   NSColor* background =
@@ -161,6 +174,7 @@
     [NSBezierPath strokeRect:NSInsetRect(marker, 1.5, 1.5)];
   }
 }
+
 - (void)navigateAt:(CGFloat)x
 {
   if (!_memoryView || !_totalSize || self.bounds.size.width <= 0)
@@ -177,6 +191,7 @@
   [_memoryView moveToOffset:std::min(centered, maximum) select:NO];
   [self updateViewport];
 }
+
 - (void)mouseDown:(NSEvent*)event
 {
   if (!_memoryView || !_totalSize)
@@ -184,29 +199,35 @@
   _dragging = YES;
   [self navigateAt:[self convertPoint:event.locationInWindow fromView:nil].x];
 }
+
 - (void)mouseDragged:(NSEvent*)event
 {
   if (_dragging)
     [self navigateAt:[self convertPoint:event.locationInWindow fromView:nil].x];
 }
+
 - (void)mouseUp:(NSEvent*)event
 {
   if (_dragging)
     [self navigateAt:[self convertPoint:event.locationInWindow fromView:nil].x];
   _dragging = NO;
 }
+
 - (id)accessibilityValue
 {
   return @(_viewStart);
 }
+
 - (id)accessibilityMinValue
 {
   return @0;
 }
+
 - (id)accessibilityMaxValue
 {
   return @(_totalSize ? _totalSize - 1 : 0);
 }
+
 - (void)setAccessibilityValue:(id)value
 {
   if (![value respondsToSelector:@selector(unsignedLongLongValue)] ||
@@ -217,4 +238,5 @@
                      select:NO];
   [self updateViewport];
 }
+
 @end

@@ -15,8 +15,7 @@ void ElfMap::calculateRegions(const std::vector<uint8_t>& data,
   regions.clear();
   const uint64_t size = data.size();
   const auto parse = [&]() {
-    if (!isSupported(data) || size < 16 ||
-        (data[4] != 1 && data[4] != 2) ||
+    if (!isSupported(data) || size < 16 || (data[4] != 1 && data[4] != 2) ||
         (data[5] != 1 && data[5] != 2) || data[6] != 1)
       return false;
     const bool is64 = data[4] == 2;
@@ -45,13 +44,13 @@ void ElfMap::calculateRegions(const std::vector<uint8_t>& data,
         return false;
       count = value(shoff + (is64 ? 44 : 28), 4);
     }
-    if (count != 0 && (entry_size < (is64 ? 56u : 32u) ||
-                       phoff < ehsize || phoff > size ||
-                       count > (size - phoff) / entry_size))
+    if (count != 0 && (entry_size < (is64 ? 56u : 32u) || phoff < ehsize ||
+                       phoff > size || count > (size - phoff) / entry_size))
       return false;
     regions.push_back({0, ehsize, MapColor::fromRgb(143, 116, 187),
                        std::string("ELF") + (is64 ? "64" : "32") + " header (" +
-                           (little ? "little" : "big") + " endian)", "Header"});
+                           (little ? "little" : "big") + " endian)",
+                       "Header"});
     if (count != 0)
       regions.push_back({phoff, phoff + count * entry_size,
                          MapColor::fromRgb(157, 133, 191),
@@ -68,17 +67,39 @@ void ElfMap::calculateRegions(const std::vector<uint8_t>& data,
         return false;
       std::string name;
       switch (type) {
-        case 0: name = "NULL"; break;
-        case 1: name = "LOAD"; break;
-        case 2: name = "DYNAMIC"; break;
-        case 3: name = "INTERP"; break;
-        case 4: name = "NOTE"; break;
-        case 5: name = "SHLIB"; break;
-        case 6: name = "PHDR"; break;
-        case 7: name = "TLS"; break;
-        case 0x6474e550: name = "GNU_EH_FRAME"; break;
-        case 0x6474e551: name = "GNU_STACK"; break;
-        case 0x6474e552: name = "GNU_RELRO"; break;
+        case 0:
+          name = "NULL";
+          break;
+        case 1:
+          name = "LOAD";
+          break;
+        case 2:
+          name = "DYNAMIC";
+          break;
+        case 3:
+          name = "INTERP";
+          break;
+        case 4:
+          name = "NOTE";
+          break;
+        case 5:
+          name = "SHLIB";
+          break;
+        case 6:
+          name = "PHDR";
+          break;
+        case 7:
+          name = "TLS";
+          break;
+        case 0x6474e550:
+          name = "GNU_EH_FRAME";
+          break;
+        case 0x6474e551:
+          name = "GNU_STACK";
+          break;
+        case 0x6474e552:
+          name = "GNU_RELRO";
+          break;
         default: {
           std::ostringstream text;
           text << "Type 0x" << std::hex << type;
@@ -89,12 +110,13 @@ void ElfMap::calculateRegions(const std::vector<uint8_t>& data,
       const std::string permissions = std::string(flags & 4 ? "R" : "-") +
                                       (flags & 2 ? "W" : "-") +
                                       (flags & 1 ? "X" : "-");
-      const std::string label = "ELF " + name + " #" + std::to_string(i) +
-                                " (" + permissions + ")";
-      regions.push_back({offset, offset + length,
-                         MapColor::fromHsv(static_cast<unsigned>((i * 47 + 195) % 360),
-                                           125, 190),
-                         label, label});
+      const std::string label =
+          "ELF " + name + " #" + std::to_string(i) + " (" + permissions + ")";
+      regions.push_back(
+          {offset, offset + length,
+           MapColor::fromHsv(static_cast<unsigned>((i * 47 + 195) % 360), 125,
+                             190),
+           label, label});
     }
     return true;
   };

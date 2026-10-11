@@ -17,12 +17,18 @@ MapColor MapColor::fromHsv(unsigned hue, unsigned saturation, unsigned value)
   const double x = c * (1 - std::abs(std::fmod(h, 2.0) - 1));
   const double m = v - c;
   switch (static_cast<unsigned>(h)) {
-    case 0: return MapColor(c + m, x + m, m);
-    case 1: return MapColor(x + m, c + m, m);
-    case 2: return MapColor(m, c + m, x + m);
-    case 3: return MapColor(m, x + m, c + m);
-    case 4: return MapColor(x + m, m, c + m);
-    default: return MapColor(c + m, m, x + m);
+    case 0:
+      return MapColor(c + m, x + m, m);
+    case 1:
+      return MapColor(x + m, c + m, m);
+    case 2:
+      return MapColor(m, c + m, x + m);
+    case 3:
+      return MapColor(m, x + m, c + m);
+    case 4:
+      return MapColor(x + m, m, c + m);
+    default:
+      return MapColor(c + m, m, x + m);
   }
 }
 
@@ -44,7 +50,9 @@ MapColor MapColor::contrasting() const
   const double saturation = value == 0 ? 0 : (value - minimum) / value;
   const double adjusted = std::max(0.0, saturation - (increased - 1));
   const auto channel = [&](double component) {
-    return saturation == 0 ? 1.0 : 1 - (1 - component / value) * adjusted / saturation;
+    return saturation == 0
+               ? 1.0
+               : 1 - (1 - component / value) * adjusted / saturation;
   };
   return MapColor(channel(red), channel(green), channel(blue));
 }
@@ -54,8 +62,10 @@ bool StandardMap::isSupported(const std::vector<uint8_t>&)
   return true;
 }
 
-bool StandardMap::readUnsigned(const std::vector<uint8_t>& data, uint64_t offset,
-                               unsigned width, bool little_endian,
+bool StandardMap::readUnsigned(const std::vector<uint8_t>& data,
+                               uint64_t offset,
+                               unsigned width,
+                               bool little_endian,
                                uint64_t& value)
 {
   const uint64_t size = data.size();
@@ -69,13 +79,14 @@ bool StandardMap::readUnsigned(const std::vector<uint8_t>& data, uint64_t offset
   return true;
 }
 
-void StandardMap::completeRegions(std::vector<MapRegion>& regions, uint64_t size,
+void StandardMap::completeRegions(std::vector<MapRegion>& regions,
+                                  uint64_t size,
                                   MapColor font_color)
 {
   std::sort(regions.begin(), regions.end(),
             [](const MapRegion& a, const MapRegion& b) {
-    return a.start != b.start ? a.start < b.start : a.end < b.end;
-  });
+              return a.start != b.start ? a.start < b.start : a.end < b.end;
+            });
   std::vector<MapRegion> complete;
   complete.reserve(regions.size() + 1);
   uint64_t cursor = 0;
@@ -115,8 +126,8 @@ void StandardMap::calculateRegions(const std::vector<uint8_t>& data,
     for (uint64_t j = start; j < end; ++j) {
       const uint8_t byte = data[static_cast<size_t>(j)];
       zeros += byte == 0;
-      ascii += (byte >= 32 && byte <= 126) || byte == '\n' ||
-               byte == '\r' || byte == '\t';
+      ascii += (byte >= 32 && byte <= 126) || byte == '\n' || byte == '\r' ||
+               byte == '\t';
     }
     const uint64_t length = end - start;
     std::string kind = "Binary";
@@ -132,7 +143,8 @@ void StandardMap::calculateRegions(const std::vector<uint8_t>& data,
       color = MapColor::fromRgb(90, 171, 129);
     }
     std::string label = kind + " (" + std::to_string(zeros * 100 / length) +
-                        "% zero, " + std::to_string(ascii * 100 / length) + "% ASCII)";
+                        "% zero, " + std::to_string(ascii * 100 / length) +
+                        "% ASCII)";
     regions.push_back({start, end, color, std::move(label), std::move(kind)});
   }
 }

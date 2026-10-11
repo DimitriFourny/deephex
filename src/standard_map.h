@@ -22,7 +22,8 @@ struct MapRegion {
   uint64_t end;  // Exclusive file offset.
   MapColor color;
   std::string label;
-  std::string legend_label;  // Short legend text; label retains range-specific details.
+  std::string
+      legend_label;  // Short legend text; label retains range-specific details.
 };
 
 class StandardMap {
@@ -34,8 +35,12 @@ class StandardMap {
   static bool isSupported(const std::vector<uint8_t>& data);
 
  protected:
-  static bool readUnsigned(const std::vector<uint8_t>& data, uint64_t offset,
-                           unsigned width, bool little_endian, uint64_t& value);
-  static void completeRegions(std::vector<MapRegion>& regions, uint64_t size,
+  static bool readUnsigned(const std::vector<uint8_t>& data,
+                           uint64_t offset,
+                           unsigned width,
+                           bool little_endian,
+                           uint64_t& value);
+  static void completeRegions(std::vector<MapRegion>& regions,
+                              uint64_t size,
                               MapColor font_color);
 };

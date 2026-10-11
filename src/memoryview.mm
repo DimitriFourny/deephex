@@ -8,6 +8,7 @@
 
 namespace {
 constexpr char kHex[] = "0123456789ABCDEF";
+
 NSString* hexText(uint8_t byte)
 {
   static NSString* values[256];
@@ -20,6 +21,7 @@ NSString* hexText(uint8_t byte)
   });
   return values[byte];
 }
+
 NSString* asciiText(uint8_t byte)
 {
   static NSString* values[95];
@@ -32,6 +34,7 @@ NSString* asciiText(uint8_t byte)
   });
   return values[(byte >= 32 && byte <= 126 ? byte : '.') - 32];
 }
+
 int hexDigit(unichar value)
 {
   if (value >= '0' && value <= '9')
@@ -42,6 +45,7 @@ int hexDigit(unichar value)
     return value - 'A' + 10;
   return -1;
 }
+
 NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
 {
   return [NSColor colorWithSRGBRed:red green:green blue:blue alpha:alpha];
@@ -75,6 +79,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   CGFloat _charWidth, _rowHeight, _headerHeight, _hexStart, _asciiStart,
       _contentWidth;
 }
+
 - (void)resetNibble;
 - (void)updateDocumentSize;
 - (void)viewportChanged:(NSNotification*)notification;
@@ -120,23 +125,28 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   [_dragTimer invalidate];
   [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
+
 - (BOOL)isFlipped
 {
   return YES;
 }
+
 - (BOOL)isOpaque
 {
   return !(_terminalTheme && _translucent);
 }
+
 - (BOOL)acceptsFirstResponder
 {
   return YES;
 }
+
 - (BOOL)becomeFirstResponder
 {
   self.needsDisplay = YES;
   return YES;
 }
+
 - (BOOL)resignFirstResponder
 {
   [self stopDragging];
@@ -144,14 +154,17 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   self.needsDisplay = YES;
   return YES;
 }
+
 - (NSUndoManager*)undoManager
 {
   return _byteUndoManager;
 }
+
 - (CGFloat)hexX:(NSInteger)column
 {
   return _hexStart + (column * 3 + column / 4) * _charWidth;
 }
+
 - (void)viewDidMoveToSuperview
 {
   [super viewDidMoveToSuperview];
@@ -182,6 +195,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   [self updateDocumentSize];
   [self viewportChanged:nil];
 }
+
 - (void)updateDocumentSize
 {
   const CGFloat rows = static_cast<CGFloat>((_bytes.size() + 15) / 16);
@@ -193,6 +207,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   if (!NSEqualSizes(size, self.frame.size))
     [self setFrameSize:size];
 }
+
 - (void)viewportChanged:(NSNotification*)notification
 {
   if ([notification.name isEqualToString:NSViewFrameDidChangeNotification])
@@ -200,21 +215,25 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   self.needsDisplay = YES;
   [self.delegate memoryViewViewportChanged:self];
 }
+
 - (void)viewDidChangeEffectiveAppearance
 {
   [super viewDidChangeEffectiveAppearance];
   self.needsDisplay = YES;
 }
+
 - (void)setTerminalTheme:(BOOL)value
 {
   _terminalTheme = value;
   self.needsDisplay = YES;
 }
+
 - (void)setTranslucent:(BOOL)value
 {
   _translucent = value;
   self.needsDisplay = YES;
 }
+
 - (void)setData:(std::vector<uint8_t>)data
 {
   [self stopDragging];
@@ -235,24 +254,29 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   if (wasModified)
     [self.delegate memoryViewModifiedChanged:self];
 }
+
 - (const std::vector<uint8_t>&)data
 {
   return _bytes;
 }
+
 - (NSInteger)selectionStart
 {
   return _anchor < 0 || _cursor < 0 ? -1 : std::min(_anchor, _cursor);
 }
+
 - (NSInteger)selectionLength
 {
   return self.selectionStart < 0
              ? 0
              : std::max(_anchor, _cursor) - self.selectionStart + 1;
 }
+
 - (BOOL)isModified
 {
   return _state != _savedState;
 }
+
 - (void)markSaved
 {
   [self resetNibble];
@@ -261,12 +285,14 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   if (wasModified)
     [self.delegate memoryViewModifiedChanged:self];
 }
+
 - (uint64_t)visibleByteStart
 {
   uint64_t row = static_cast<uint64_t>(
       std::max<CGFloat>(0, std::floor(self.visibleRect.origin.y / _rowHeight)));
   return std::min<uint64_t>(_bytes.size(), row * 16);
 }
+
 - (uint64_t)visibleByteEnd
 {
   CGFloat bottom =
@@ -275,12 +301,14 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   return std::max(self.visibleByteStart,
                   std::min<uint64_t>(_bytes.size(), end));
 }
+
 - (void)resetNibble
 {
   _lowNibble = NO;
   _pendingNibble = nil;
   self.needsDisplay = YES;
 }
+
 - (void)selectRange:(NSInteger)start length:(NSInteger)length
 {
   [self resetNibble];
@@ -298,6 +326,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   if (oldAnchor != _anchor || oldCursor != _cursor)
     [self.delegate memoryViewSelectionChanged:self];
 }
+
 - (void)setCursor:(NSInteger)index extend:(BOOL)extend
 {
   if (_bytes.empty())
@@ -313,6 +342,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   if (oldAnchor != _anchor || oldCursor != _cursor)
     [self.delegate memoryViewSelectionChanged:self];
 }
+
 - (void)ensureCursorVisible
 {
   if (_cursor < 0)
@@ -333,6 +363,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
     point.x = x + width - visible.size.width;
   [self scrollPoint:point];
 }
+
 - (void)moveToOffset:(uint64_t)offset select:(BOOL)select
 {
   if (_bytes.empty())
@@ -355,6 +386,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   if (previous != self.modified)
     [self.delegate memoryViewModifiedChanged:self];
 }
+
 - (void)applyEdit:(DHByteEdit*)edit undo:(BOOL)undo
 {
   [self resetNibble];
@@ -372,6 +404,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   _state = undo ? edit->beforeState : edit->afterState;
   [self notifyDataWithPreviousModified:wasModified];
 }
+
 - (DHByteEdit*)overwrite:(NSInteger)start
                    bytes:(const uint8_t*)bytes
                    count:(size_t)count
@@ -409,6 +442,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   [self notifyDataWithPreviousModified:wasModified];
   return edit;
 }
+
 - (void)enterHexDigit:(int)digit
 {
   if (self.selectionLength != 1)
@@ -442,6 +476,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
     _lowNibble = YES;
   self.needsDisplay = YES;
 }
+
 - (void)enterASCII:(uint8_t)value
 {
   if (self.selectionLength != 1)
@@ -452,6 +487,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   if (index + 1 < static_cast<NSInteger>(_bytes.size()))
     [self setCursor:index + 1 extend:NO];
 }
+
 - (IBAction)copy:(id)sender
 {
   [self resetNibble];
@@ -474,6 +510,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   [board clearContents];
   [board setString:text forType:NSPasteboardTypeString];
 }
+
 - (void)showPasteError:(NSString*)message
 {
   NSAlert* alert = [[NSAlert alloc] init];
@@ -485,6 +522,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   else
     [alert runModal];
 }
+
 - (IBAction)paste:(id)sender
 {
   [self resetNibble];
@@ -558,10 +596,12 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
              name:@"Paste Bytes"];
   [self selectRange:start length:bytes.size()];
 }
+
 - (IBAction)selectAll:(id)sender
 {
   [self selectRange:0 length:_bytes.size()];
 }
+
 - (IBAction)zeroSelection:(id)sender
 {
   [self resetNibble];
@@ -580,16 +620,19 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
             count:zero.size()
              name:@"Zero Selection"];
 }
+
 - (IBAction)undo:(id)sender
 {
   [self resetNibble];
   [_byteUndoManager undo];
 }
+
 - (IBAction)redo:(id)sender
 {
   [self resetNibble];
   [_byteUndoManager redo];
 }
+
 - (BOOL)validateMenuItem:(NSMenuItem*)item
 {
   SEL action = item.action;
@@ -604,6 +647,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
     return self.selectionLength > 0;
   return YES;
 }
+
 - (NSMenu*)menuForEvent:(NSEvent*)event
 {
   [self resetNibble];
@@ -627,6 +671,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   }
   return menu;
 }
+
 - (void)keyDown:(NSEvent*)event
 {
   NSString* characters = event.charactersIgnoringModifiers;
@@ -752,6 +797,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   return std::clamp<NSInteger>(index, 0,
                                static_cast<NSInteger>(_bytes.size()) - 1);
 }
+
 - (void)mouseDown:(NSEvent*)event
 {
   if (event.modifierFlags & NSEventModifierFlagControl) {
@@ -781,6 +827,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
                                         }];
   [NSRunLoop.mainRunLoop addTimer:_dragTimer forMode:NSRunLoopCommonModes];
 }
+
 - (void)mouseDragged:(NSEvent*)event
 {
   if (!_dragging)
@@ -788,6 +835,7 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   _dragWindowPoint = event.locationInWindow;
   [self updateDrag];
 }
+
 - (void)mouseUp:(NSEvent*)event
 {
   if (_dragging) {
@@ -796,12 +844,14 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   }
   [self stopDragging];
 }
+
 - (void)stopDragging
 {
   _dragging = NO;
   [_dragTimer invalidate];
   _dragTimer = nil;
 }
+
 - (void)updateDrag
 {
   if (!_dragging || _bytes.empty())
@@ -952,4 +1002,5 @@ NSColor* rgb(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha = 1)
   NSRectFill(NSMakeRect(visible.origin.x, headerY + _headerHeight - 1,
                         visible.size.width, 1));
 }
+
 @end

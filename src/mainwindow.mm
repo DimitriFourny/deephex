@@ -13,10 +13,12 @@
 
 namespace {
 constexpr size_t MaxFileSize = 256 * 1024 * 1024;
+
 NSString* offsetText(uint64_t value)
 {
   return [NSString stringWithFormat:@"0x%08llX", (unsigned long long)value];
 }
+
 NSString* text(const std::string& value)
 {
   return [[NSString alloc] initWithBytes:value.data()
@@ -24,6 +26,7 @@ NSString* text(const std::string& value)
                                 encoding:NSUTF8StringEncoding]
              ?: @"";
 }
+
 NSTextField* label(NSString* value, CGFloat size = 13, BOOL bold = NO)
 {
   NSTextField* field = [NSTextField wrappingLabelWithString:value];
@@ -31,10 +34,12 @@ NSTextField* label(NSString* value, CGFloat size = 13, BOOL bold = NO)
                     : [NSFont systemFontOfSize:size];
   return field;
 }
+
 NSButton* button(NSString* title, id target, SEL action)
 {
   return [NSButton buttonWithTitle:title target:target action:action];
 }
+
 NSStackView* stack(NSArray<NSView*>* views,
                    NSUserInterfaceLayoutOrientation orientation)
 {
@@ -47,6 +52,7 @@ NSStackView* stack(NSArray<NSView*>* views,
   view.translatesAutoresizingMaskIntoConstraints = NO;
   return view;
 }
+
 NSMenuItem* menuItem(NSMenu* menu,
                      NSString* title,
                      SEL action,
@@ -62,6 +68,7 @@ NSMenuItem* menuItem(NSMenu* menu,
       NSEventModifierFlagCommand | (shift ? NSEventModifierFlagShift : 0);
   return item;
 }
+
 NSMenu* submenu(NSMenu* menu, NSString* title)
 {
   NSMenuItem* item = [menu addItemWithTitle:title action:nil keyEquivalent:@""];
@@ -82,17 +89,20 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
 @property(nonatomic) BOOL translucent;
 @end
 @implementation DHWorkbenchView
+
 - (instancetype)initWithFrame:(NSRect)frame
 {
   if ((self = [super initWithFrame:frame]))
     [self registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
   return self;
 }
+
 - (void)viewDidChangeEffectiveAppearance
 {
   [super viewDidChangeEffectiveAppearance];
   [self.controller refreshAppearance];
 }
+
 - (void)drawRect:(NSRect)rect
 {
   [super drawRect:rect];
@@ -105,22 +115,26 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   [color setFill];
   NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
 }
+
 - (NSArray<NSURL*>*)droppedURLs:(id<NSDraggingInfo>)sender
 {
   return [sender.draggingPasteboard
       readObjectsForClasses:@[ NSURL.class ]
                     options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
 }
+
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender
 {
   return [self droppedURLs:sender].count == 1 ? NSDragOperationCopy
                                               : NSDragOperationNone;
 }
+
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)sender
 {
   NSArray<NSURL*>* urls = [self droppedURLs:sender];
   return urls.count == 1 && [self.controller openFile:urls.firstObject.path];
 }
+
 @end
 
 @implementation DHMainWindowController {
@@ -145,6 +159,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   NSTimer* _overviewTimer;
   std::vector<MapRegion> _regions;
 }
+
 - (instancetype)init
 {
   NSWindow* window = [[NSWindow alloc]
@@ -345,15 +360,18 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   [self updateSelection];
   return self;
 }
+
 - (void)dealloc
 {
   [_overviewTimer invalidate];
   [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
 }
+
 - (DHMemoryView*)editor
 {
   return _editor;
 }
+
 - (void)installMenus
 {
   NSMenu* main = [[NSMenu alloc] initWithTitle:@"Main"];
@@ -411,6 +429,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   [self updateRecentFiles];
   [self applyAppearance];
 }
+
 - (NSArray<NSToolbarItemIdentifier>*)toolbarAllowedItemIdentifiers:
     (NSToolbar*)toolbar
 {
@@ -420,6 +439,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
     NSToolbarFlexibleSpaceItemIdentifier, NSToolbarSpaceItemIdentifier
   ];
 }
+
 - (NSArray<NSToolbarItemIdentifier>*)toolbarDefaultItemIdentifiers:
     (NSToolbar*)toolbar
 {
@@ -429,6 +449,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
     @"Find", @"Offset"
   ];
 }
+
 - (NSToolbarItem*)toolbar:(NSToolbar*)toolbar
         itemForItemIdentifier:(NSToolbarItemIdentifier)identifier
     willBeInsertedIntoToolbar:(BOOL)inserted
@@ -462,6 +483,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   item.action = NSSelectorFromString(actions[identifier]);
   return item;
 }
+
 - (BOOL)validateMenuItem:(NSMenuItem*)item
 {
   if (item.action == @selector(saveDocument:))
@@ -479,6 +501,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
     return !_loading;
   return YES;
 }
+
 - (BOOL)validateToolbarItem:(NSToolbarItem*)item
 {
   if (item.action == @selector(saveDocument:))
@@ -488,6 +511,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
     return _path && !_loading;
   return !_loading;
 }
+
 - (void)warn:(NSString*)title message:(NSString*)message
 {
   NSAlert* alert = [[NSAlert alloc] init];
@@ -495,6 +519,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   alert.informativeText = message;
   [alert runModal];
 }
+
 - (void)openDocument:(id)sender
 {
   (void)sender;
@@ -506,11 +531,13 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   if ([panel runModal] == NSModalResponseOK)
     [self openFile:panel.URL.path];
 }
+
 - (void)cancelOpen:(id)sender
 {
   (void)sender;
   _cancelLoading = YES;
 }
+
 - (BOOL)openFile:(NSString*)path
 {
   if (_loading || ![self maybeSave])
@@ -609,6 +636,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   [self.window makeFirstResponder:_editor];
   return YES;
 }
+
 - (void)recordDiskState
 {
   NSDictionary* attrs =
@@ -616,6 +644,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   _diskModified = attrs[NSFileModificationDate];
   _diskSize = [attrs[NSFileSize] unsignedLongLongValue];
 }
+
 - (BOOL)saveFile:(NSString*)path
 {
   if (!_path || _loading)
@@ -655,12 +684,14 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   [self rememberFile];
   return YES;
 }
+
 - (void)saveDocument:(id)sender
 {
   (void)sender;
   if (_path)
     [self saveFile:_path];
 }
+
 - (void)saveDocumentAs:(id)sender
 {
   (void)sender;
@@ -673,6 +704,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   if ([panel runModal] == NSModalResponseOK)
     [self saveFile:panel.URL.path];
 }
+
 - (BOOL)maybeSave
 {
   if (_loading)
@@ -690,11 +722,13 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   return answer == NSAlertSecondButtonReturn ||
          (answer == NSAlertFirstButtonReturn && [self saveFile:_path]);
 }
+
 - (BOOL)windowShouldClose:(NSWindow*)sender
 {
   (void)sender;
   return [self maybeSave];
 }
+
 - (void)windowWillClose:(NSNotification*)notification
 {
   (void)notification;
@@ -712,6 +746,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   [self updateDocument];
   [self updateSelection];
 }
+
 - (void)showFind:(id)sender
 {
   (void)sender;
@@ -719,22 +754,26 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   [self.window makeFirstResponder:_searchInput];
   [_searchInput selectText:nil];
 }
+
 - (void)hideFind:(id)sender
 {
   (void)sender;
   _findBar.hidden = YES;
   [self.window makeFirstResponder:_editor];
 }
+
 - (void)findNext:(id)sender
 {
   (void)sender;
   [self findBackwards:NO];
 }
+
 - (void)findPrevious:(id)sender
 {
   (void)sender;
   [self findBackwards:YES];
 }
+
 - (void)findBackwards:(BOOL)backwards
 {
   if (!_path)
@@ -827,6 +866,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
       [NSString stringWithFormat:@"%@%@", wrapped ? @"Wrapped · " : @"",
                                  offsetText(found)];
 }
+
 - (void)goToOffset:(id)sender
 {
   (void)sender;
@@ -875,6 +915,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   [_editor moveToOffset:offset select:YES];
   [self.window makeFirstResponder:_editor];
 }
+
 - (void)updateDocument
 {
   BOOL dirty = _editor.modified;
@@ -901,11 +942,13 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   }
   [self.window.toolbar validateVisibleItems];
 }
+
 - (void)byteOrderChanged:(id)sender
 {
   (void)sender;
   [self updateSelection];
 }
+
 - (void)updateSelection
 {
   NSInteger start = _editor.selectionStart, length = _editor.selectionLength;
@@ -969,21 +1012,25 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
     [values appendString:@"Float64  —"];
   _inspector.string = values;
 }
+
 - (void)memoryViewSelectionChanged:(DHMemoryView*)view
 {
   (void)view;
   [self updateSelection];
 }
+
 - (void)memoryViewModifiedChanged:(DHMemoryView*)view
 {
   (void)view;
   [self updateDocument];
 }
+
 - (void)memoryViewViewportChanged:(DHMemoryView*)view
 {
   (void)view;
   [_overview updateViewport];
 }
+
 - (void)memoryViewDataChanged:(DHMemoryView*)view
 {
   (void)view;
@@ -1001,6 +1048,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
                                           [weakSelf updateOverview];
                                         }];
 }
+
 - (void)updateOverview
 {
   if (!_editor)
@@ -1059,11 +1107,13 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   _legend.attributedStringValue = legend;
   _legend.hidden = _regions.empty();
 }
+
 - (NSInteger)numberOfRowsInTableView:(NSTableView*)table
 {
   (void)table;
   return _regions.size();
 }
+
 - (NSView*)tableView:(NSTableView*)table
     viewForTableColumn:(NSTableColumn*)column
                    row:(NSInteger)row
@@ -1085,6 +1135,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
                        offsetText(region.start), offsetText(region.end - 1)];
   return field;
 }
+
 - (void)navigateRegion:(id)sender
 {
   (void)sender;
@@ -1094,6 +1145,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
     [self.window makeFirstResponder:_editor];
   }
 }
+
 - (void)toggleInspector:(id)sender
 {
   (void)sender;
@@ -1104,6 +1156,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   [NSUserDefaults.standardUserDefaults setBool:!_sidebar.hidden
                                         forKey:@"showInspector"];
 }
+
 - (CGFloat)splitView:(NSSplitView*)split
     constrainMinCoordinate:(CGFloat)coordinate
                ofSubviewAt:(NSInteger)index
@@ -1113,6 +1166,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   (void)index;
   return 360;
 }
+
 - (CGFloat)splitView:(NSSplitView*)split
     constrainMaxCoordinate:(CGFloat)coordinate
                ofSubviewAt:(NSInteger)index
@@ -1121,6 +1175,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   (void)index;
   return NSWidth(split.bounds) - 240;
 }
+
 - (void)splitView:(NSSplitView*)split resizeSubviewsWithOldSize:(NSSize)oldSize
 {
   (void)oldSize;
@@ -1135,6 +1190,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   _sidebar.frame =
       NSMakeRect(editorWidth + split.dividerThickness, 0, sidebarWidth, height);
 }
+
 - (void)selectAppearance:(id)sender
 {
   _appearance = std::clamp<NSInteger>([sender tag], 0, 2);
@@ -1142,6 +1198,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
                                            forKey:@"appearance"];
   [self applyAppearance];
 }
+
 - (void)toggleTransparency:(id)sender
 {
   (void)sender;
@@ -1150,6 +1207,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
                                         forKey:@"terminalTransparency"];
   [self applyAppearance];
 }
+
 - (BOOL)usesTerminalAppearance
 {
   return _appearance == 2 ||
@@ -1158,11 +1216,13 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
             NSAppearanceNameAqua, NSAppearanceNameDarkAqua
           ]] isEqual:NSAppearanceNameDarkAqua]);
 }
+
 - (void)accessibilityChanged:(NSNotification*)notification
 {
   (void)notification;
   [self applyAppearance];
 }
+
 - (void)applyAppearance
 {
   self.window.appearance =
@@ -1173,6 +1233,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
                                               : NSAppearanceNameDarkAqua];
   [self refreshAppearance];
 }
+
 - (void)refreshAppearance
 {
   if (!_editor)
@@ -1222,6 +1283,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   _root.needsDisplay = YES;
   [self updateOverview];
 }
+
 - (void)rememberFile
 {
   NSMutableArray<NSString*>* recent =
@@ -1237,6 +1299,7 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
       noteNewRecentDocumentURL:[NSURL fileURLWithPath:_path]];
   [self updateRecentFiles];
 }
+
 - (void)updateRecentFiles
 {
   [_recentMenu removeAllItems];
@@ -1251,10 +1314,12 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
     [_recentMenu addItem:NSMenuItem.separatorItem];
   menuItem(_recentMenu, @"Clear Menu", @selector(clearRecent:), @"", self);
 }
+
 - (void)openRecent:(NSMenuItem*)sender
 {
   [self openFile:sender.representedObject];
 }
+
 - (void)clearRecent:(id)sender
 {
   (void)sender;
@@ -1262,4 +1327,5 @@ NSMenu* submenu(NSMenu* menu, NSString* title)
   [NSDocumentController.sharedDocumentController clearRecentDocuments:nil];
   [self updateRecentFiles];
 }
+
 @end

@@ -84,3 +84,11 @@ To open a file directly from the terminal:
 ```
 
 The build produces a local, unsigned `.app` bundle using Apple system frameworks. No third-party GUI runtime is required. DeepHex supports macOS only.
+
+### Source formatting
+
+Use clang-format 14 or newer. The repository style inserts blank lines between definitions, including Objective-C methods.
+
+```bash
+clang-format -i src/*.mm
+```
